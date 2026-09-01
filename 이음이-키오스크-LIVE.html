@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>이음이</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{--brand:#15704f;--green:#59b25f;--line:#3f8fbf;--ink:#183a56}
+  body{font-family:'Noto Sans KR',sans-serif;background:#e9eef1;color:var(--ink);display:flex;align-items:center;justify-content:center;min-height:100vh;overflow:hidden}
+  .frame{position:relative;width:min(440px,96vw);height:min(94vh,calc(96vw*16/9));aspect-ratio:9/16;
+    background:#f4f3f1 url('assets/prototype/배경칼라.png') center/cover no-repeat;border:2px solid #dfe3e6;border-radius:16px;overflow:hidden;box-shadow:0 30px 70px -25px rgba(0,0,0,.4)}
+  .char{position:absolute;left:-5%;bottom:0;width:74%;height:110%;z-index:2;transform:scale(1.5);transform-origin:bottom center}
+  .char img{width:100%;height:100%;object-fit:contain;object-position:bottom center}
+  .bubble{position:absolute;top:6%;right:4%;left:43%;z-index:3;background:#fff;border:3px solid var(--line);border-radius:26px;padding:18px 18px;
+    display:flex;align-items:center;justify-content:center;text-align:center;font-size:23px;line-height:1.45;font-weight:800;color:var(--ink);word-break:keep-all;
+    box-shadow:0 14px 30px -18px rgba(63,143,191,.55);transition:.3s;min-height:120px}
+  .bubble.hide{opacity:0}
+  .call{position:absolute;right:9%;bottom:11%;z-index:4;width:110px;height:110px;cursor:pointer;border:none;background:none;padding:0;border-radius:50%}
+  .call img{width:100%;height:100%;display:block;border-radius:50%}
+  .call.invite{animation:invite 1.3s ease-in-out infinite}
+  @keyframes invite{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
+  .call.listening::before,.call.listening::after{content:"";position:absolute;inset:4px;border-radius:50%;border:3px solid var(--green);animation:ping 1.4s ease-out infinite;pointer-events:none}
+  .call.listening::after{animation-delay:.7s}
+  @keyframes ping{0%{transform:scale(1);opacity:.6}100%{transform:scale(1.65);opacity:0}}
+  .status{position:absolute;bottom:6%;left:6%;z-index:6;font-weight:800;font-size:15px;color:var(--brand);background:#eafaf2;border:2px solid var(--green);border-radius:999px;padding:8px 14px;opacity:0;transition:.2s;max-width:55%}
+  .status.show{opacity:1}
+  .hang{position:absolute;bottom:6%;right:6%;z-index:9;display:none}
+  .hang.show{display:block}
+  .hang button{font-family:inherit;font-weight:800;font-size:13px;border:none;border-radius:999px;padding:8px 14px;background:#ef4444;color:#fff;cursor:pointer;transition:.2s}
+  .hang.alert button{font-size:16px;padding:12px 20px;animation:hangpulse 1.1s infinite}
+  @keyframes hangpulse{0%{box-shadow:0 0 0 0 rgba(239,68,68,.55);transform:scale(1)}70%{box-shadow:0 0 0 14px rgba(239,68,68,0);transform:scale(1.06)}100%{box-shadow:0 0 0 0 rgba(239,68,68,0);transform:scale(1)}}
+  /* 입력 대체(타이핑) */
+  .typerow{position:absolute;bottom:22%;left:6%;right:6%;z-index:7;display:none;gap:6px}
+  .typerow.show{display:flex}
+  .typerow input{flex:1;border:2px solid var(--line);border-radius:12px;padding:10px 12px;font-family:inherit;font-size:15px}
+  .typerow button{border:none;background:var(--brand);color:#fff;font-weight:800;border-radius:12px;padding:0 14px;cursor:pointer}
+  /* 키패드 */
+  .kwrap{position:absolute;inset:0;z-index:15;background:rgba(21,112,79,.4);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center}
+  .kwrap.hidden{display:none}
+  .kp{background:#fff;border-radius:24px;padding:22px;width:88%}
+  .kp .t{font-size:19px;font-weight:900;text-align:center;color:var(--brand)}
+  .kp .num{font-size:32px;font-weight:900;text-align:center;letter-spacing:2px;min-height:44px;margin-top:6px;color:var(--ink)}
+  .g{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:12px}
+  .g button{font-family:inherit;font-size:26px;font-weight:900;padding:13px 0;border-radius:14px;border:2px solid #e2e8f0;background:#f8fafc;cursor:pointer}
+  .g .del{color:#ef4444;font-size:17px}
+  .g .send{grid-column:span 3;background:var(--brand);color:#fff;border-color:var(--brand);font-size:21px}
+  .note{position:absolute;bottom:2px;left:0;right:0;text-align:center;font-size:10px;color:#aeb9bf;z-index:1}
+  .brandwm{position:absolute;bottom:15px;left:0;right:0;text-align:center;font-size:11px;font-weight:700;letter-spacing:.6px;color:#96a2a8;z-index:6;pointer-events:none}
+  .off{display:none}
+  #smsBtn{position:absolute;bottom:6%;left:6%;z-index:8;background:#15704f;color:#fff;border:none;border-radius:999px;padding:11px 18px;font-weight:800;font-size:15px;cursor:pointer;box-shadow:0 10px 22px -8px rgba(21,112,79,.6)}
+  .cbtns{display:flex;gap:10px;margin-top:16px}
+  .cbtns button{flex:1;font-family:inherit;font-size:20px;font-weight:900;padding:16px 0;border-radius:14px;border:none;cursor:pointer}
+  .cok{background:var(--brand);color:#fff}.cno{background:#e2e8f0;color:#475569}
+  /* 발송 완료 카드 */
+  .sentto{text-align:center;font-size:16px;font-weight:800;color:var(--ink);margin-top:10px}
+  .sentto b{color:var(--brand)}
+  .smsbody{white-space:pre-wrap;background:#f1f8f4;border:2px solid #d6ece0;border-radius:14px;padding:15px 16px;margin-top:13px;font-size:15px;line-height:1.6;color:#1f2937;text-align:left}
+  .doneBtn{width:100%;margin-top:15px;font-family:inherit;font-size:20px;font-weight:900;padding:15px 0;border-radius:14px;border:none;background:var(--brand);color:#fff;cursor:pointer}
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="char"><img src="assets/prototype/이음이프린트티.png" alt="이음이"/></div>
+  <div class="bubble" id="bubble">수화기를 들고<br/>아래 초록 버튼을<br/>눌러주세요.</div>
+  <div class="status" id="status"></div>
+
+  <button class="call invite" id="call"><img src="assets/prototype/전화아이콘.png" alt="통화"/></button>
+  <div class="hang" id="hang"><button id="hangBtn">통화 종료</button></div>
+  <button id="smsBtn" style="display:none">📩 문자 받기</button>
+
+  <div class="typerow" id="typerow">
+    <input id="typein" placeholder="말이 안 되면 여기에 입력…"/>
+    <button id="typebtn">보내기</button>
+  </div>
+
+  <div class="kwrap hidden" id="kwrap">
+    <div class="kp" id="kpEntry">
+      <div class="t" id="ktitle">전화번호를 눌러 주세요</div>
+      <div class="num" id="num">​</div>
+      <div class="g">
+        <button>1</button><button>2</button><button>3</button>
+        <button>4</button><button>5</button><button>6</button>
+        <button>7</button><button>8</button><button>9</button>
+        <button class="del" data-act="del">지우기</button><button>0</button><button class="del" data-act="del">←</button>
+        <button class="send" data-act="send">문자 보내기</button>
+      </div>
+    </div>
+    <div class="kp off" id="kpConfirm">
+      <div class="t" id="ctitle">이 번호로 문자를 보내드릴까요?</div>
+      <div class="num" id="cnum" style="color:#15704f">​</div>
+      <div class="cbtns">
+        <button class="cok" data-act="cyes">예, 보내주세요</button>
+        <button class="cno" data-act="cno">아니요, 다시</button>
+      </div>
+    </div>
+    <div class="kp off" id="kpSent">
+      <div class="t" id="sentTitle">✅ 문자를 보냈어요</div>
+      <div class="sentto" id="sentTo"></div>
+      <div class="smsbody" id="smsBody"></div>
+      <button class="doneBtn" data-act="sdone">확인</button>
+    </div>
+  </div>
+  <div class="brandwm">play4.co.kr</div>
+  <div class="note">※ 마이크 권한 허용 필요. 인식 안 되면 하단 입력창으로도 대화됩니다.</div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const bubble=$('#bubble'), statusEl=$('#status'), call=$('#call'), hang=$('#hang'),
+      typerow=$('#typerow'), kwrap=$('#kwrap'), num=$('#num'),
+      smsBtn=$('#smsBtn'), kpEntry=$('#kpEntry'), kpConfirm=$('#kpConfirm'), cnum=$('#cnum'), ctitle=$('#ctitle'),
+      kpSent=$('#kpSent'), sentTitle=$('#sentTitle'), sentTo=$('#sentTo'), smsBody=$('#smsBody');
+const API=''; // 같은 오리진(localhost:8791)
+const KO={'0':'공','1':'일','2':'이','3':'삼','4':'사','5':'오','6':'육','7':'칠','8':'팔','9':'구'};
+const digitsKo=p=>[p.slice(0,3),p.slice(3,7),p.slice(7,11)].filter(Boolean).map(s=>s.split('').map(d=>KO[d]||d).join('')).join(', ');
+// 회원명단 (전화번호→이름) — 실제 센터 명단 연동 전, 데모용
+const MEMBERS={ '01053729611':'임진우' };   // ← 데모: 이 번호를 입력하면 '임진우 어르신'으로 인식
+const memberName=p=>MEMBERS[(p||'').replace(/\D/g,'')]||'';
+
+// 비디오 시연용 · 서초구 일자리 2건 (비교·선택 시나리오)
+const JOBS=[
+  {gu:'서초구 방배동', job:'아파트 미화원(건물 청소)', org:'방배동 아파트 관리사무소',
+   pay:'월급 150만원', work:'오전 8시부터 낮 12시까지, 하루 4시간, 주 5일', age:'만 60세 이상',
+   to:'8월 31일까지', place:'서초구 방배동', tel:'관리사무소 02-533-0000', note:'몸을 조금 쓰는 활동적인 일, 급여가 더 높음'},
+  {gu:'서초구 서초동', job:'경로당 급식 도우미(배식·정리)', org:'서초동 경로당',
+   pay:'시급 만 삼백이십 원', work:'점심때 오전 11시부터 오후 2시까지, 하루 3시간, 주 4일', age:'만 60세 이상',
+   to:'8월 20일까지', place:'서초구 서초동', tel:'경로당 02-586-0000', note:'앉아서도 가능한 가벼운 일, 시간이 더 짧음'},
+];
+let history=[], active=false, offerSms=false, pickedJob=null, awaitingFollowup=false;
+
+const setStatus=(t,on=true)=>{statusEl.textContent=t;statusEl.classList.toggle('show',on&&!!t);call.classList.toggle('listening',/듣고|말씀/.test(t));};
+const say=(t)=>{bubble.innerHTML=t;bubble.classList.remove('hide');};
+
+// ---- 음성 인식 (브라우저 STT) ----
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let rec=null;
+if(SR){ rec=new SR(); rec.lang='ko-KR'; rec.interimResults=false; rec.maxAlternatives=1;
+  rec.onresult=e=>{ const t=e.results[0][0].transcript.trim(); if(t) onUser(t); };
+  rec.onerror=()=>{ if(active) setStatus('말이 안 들려요. 아래에 입력해 주세요.'); typerow.classList.add('show'); };
+  rec.onend=()=>{};
+}
+// 무응답(침묵) 감지 → 통화 종료 버튼 강조 + 안내
+let idleTimer=null;
+function clearIdle(){ if(idleTimer){clearTimeout(idleTimer);idleTimer=null;} hang.classList.remove('alert'); }
+function armIdle(){ clearTimeout(idleTimer); idleTimer=setTimeout(()=>{
+  if(!active) return;
+  hang.classList.add('alert');
+  setStatus('응답이 없으시면 아래에 입력하시거나, 통화 종료를 눌러 주세요.', true);
+  typerow.classList.add('show');
+}, 12000); }
+function listen(){ if(!active) return; if(rec){ try{ setStatus('말씀하세요 🎙️'); rec.start(); armIdle(); }catch(e){} } else { typerow.classList.add('show'); setStatus('아래에 입력해 주세요'); armIdle(); } }
+
+// ---- TTS (클로바) ----
+let audio=new Audio();
+async function speak(text){
+  // 음성으로 읽을 때만 이모지·특수기호 제거 (화면 말풍선엔 그대로 남음)
+  text=(text||'').replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu,'').replace(/\s{2,}/g,' ').trim();
+  return new Promise(async res=>{
+    try{
+      setStatus('이음이가 말하는 중…', true); call.classList.remove('listening');
+      const r=await fetch(API+'/tts',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});
+      const b=await r.blob(); audio.src=URL.createObjectURL(b);
+      audio.onended=()=>res(); audio.onerror=()=>res(); await audio.play();
+    }catch(e){ res(); }
+  });
+}
+
+// ---- 대화 한 턴 ----
+async function botTurn(){
+  setStatus('이음이가 생각하는 중…');
+  try{
+    const r=await fetch(API+'/chat',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({history, jobs:JOBS})});
+    const d=await r.json();
+    if(d.error){ say('죄송해요, 지금은 대답하기 어려워요.'); setStatus('⚠ '+String(d.error).slice(0,70), true); return; }
+    const p=d.parsed||{}; const reply=p.reply||d.raw||'죄송해요, 다시 한 번 말씀해 주시겠어요?';
+    history.push({role:'assistant',content:reply});
+    offerSms=!!p.offerSms;
+    if(p.pick && JOBS[p.pick-1]) pickedJob=JOBS[p.pick-1];   // 어르신이 고른 자리 기억
+    say(reply);
+    await speak(reply);
+    if(offerSms){ setStatus('문자를 원하시면 "문자 받기"를 눌러도 돼요'); }
+    if(!active) return;
+    listen();
+  }catch(e){ say('연결에 문제가 있어요. 잠시 후 다시 해주세요.'); setStatus(''); }
+}
+async function onUser(text){
+  if(!active) return;
+  clearIdle();
+  setStatus(''); typerow.classList.remove('show');
+  history.push({role:'user',content:text});
+  // 추가 문자 제안에 대한 응답 처리
+  if(awaitingFollowup){
+    awaitingFollowup=false;
+    const nm=memberName(phone);
+    if(/(응|그래|네|예|보내|좋아|해줘|부탁)/.test(text)){
+      // 어르신이 찾으시는 것과 비슷한 '다른 일자리'(선택 안 한 나머지) 추천 발송
+      const other=JOBS.find(j=>j!==(pickedJob||JOBS[0]))||JOBS[1]||JOBS[0];
+      showSentCard('✅ 다른 일자리도 보냈어요', other, 'send'); setStatus('');
+      fetch(API+'/sms',{method:'POST',headers:{'content-type':'application/json'},
+        body:JSON.stringify({to:phone, jobs:[other], history})}).catch(()=>{});
+      const m=(nm?nm+' 어르신, ':'')+'어르신께 맞을 만한 다른 일자리도 문자로 보내드렸어요. 도움이 되시길 바라요. 안녕히 가세요!';
+      history.push({role:'assistant',content:m}); say(m); setStatus(''); await speak(m);
+    }else{
+      const m='네, 도움이 되셨길 바라요. 안녕히 가세요!';
+      history.push({role:'assistant',content:m}); say(m); await speak(m);
+    }
+    return;
+  }
+  // 문자 요청 감지
+  if(offerSms && /(문자|보내|응|그래|좋아|예)/.test(text)){ openKeypad(); return; }
+  botTurn();
+}
+
+// 타이핑 입력
+$('#typebtn').onclick=()=>{ const v=$('#typein').value.trim(); if(v){ $('#typein').value=''; onUser(v); } };
+$('#typein').addEventListener('keydown',e=>{ if(e.key==='Enter') $('#typebtn').click(); });
+
+// ---- 키패드 → 번호확인 → 발송 ----
+let phone='';
+const fmtp=p=>{let d=p;if(d.length>3&&d.length<=7)d=d.slice(0,3)+'-'+d.slice(3);else if(d.length>7)d=d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7,11);return d||'​';};
+function renderNum(){ num.textContent=fmtp(phone); }
+function openKeypad(){ phone=''; renderNum(); kpEntry.classList.remove('off'); kpConfirm.classList.add('off'); kpSent.classList.add('off'); kwrap.classList.remove('hidden'); smsBtn.style.display='none'; if(rec)try{rec.stop()}catch(e){} }
+function openConfirm(){
+  cnum.textContent=fmtp(phone);
+  const nm=memberName(phone);
+  if(nm){
+    // 회원 명단에서 번호가 매칭됨 → 성함 확인 안내
+    ctitle.innerHTML='✅ <b>'+nm+'</b> 어르신, 성함이 확인되었어요<br>이 번호로 보내드릴까요?';
+    speak(nm+' 어르신, 성함이 확인되었어요. '+digitsKo(phone)+' 번호로 보내드릴까요?');
+  }else{
+    ctitle.textContent='이 번호로 문자를 보내드릴까요?';
+    speak(digitsKo(phone)+' 번호로 문자를 보내드릴까요?');
+  }
+  kpEntry.classList.add('off'); kpConfirm.classList.remove('off');
+}
+// 문자 본문 (server.js /sms 와 동일 포맷 — 화면 미리보기 = 실제 발송 내용)
+function buildSmsText(j, kind){
+  if(kind==='followup'){
+    return `[서초 어르신 행복이음] 이음이 추가 안내
+아까 문의하신 자세한 내용입니다.
+▸ ${j.gu} · ${j.job}
+▸ 근무 ${j.work||'담당 기관 문의'}
+▸ 문의 ${j.tel||'-'}
+정확한 조건은 위 담당 기관에 확인해 주세요. 건강하세요!`;
+  }
+  return `[서초 어르신 행복이음] 이음이 안내
+▸ ${j.gu} · ${j.job}
+▸ 급여 ${j.pay}
+▸ 근무 ${j.work||'-'}
+▸ 대상 ${j.age||'-'}
+▸ 접수 ${j.to||'-'}
+▸ 문의 ${j.tel||'-'}`;
+}
+// 발송 완료 카드 표시 (문자 내용 + 받는 번호)
+function showSentCard(title, job, kind){
+  const nm=memberName(phone);
+  kpEntry.classList.add('off'); kpConfirm.classList.add('off'); kpSent.classList.remove('off');
+  kwrap.classList.remove('hidden');
+  sentTitle.textContent=title;
+  sentTo.innerHTML=(nm?'<b>'+nm+' 어르신</b> · ':'')+fmtp(phone);
+  smsBody.textContent=buildSmsText(job, kind);
+}
+async function doSend(){
+  const nm=memberName(phone);
+  const job=pickedJob||JOBS[0];
+  // 실발송 시도: .env에 SMS 키가 있으면 실제 문자 발송, 없으면 화면 표시만 (시연)
+  fetch(API+'/sms',{method:'POST',headers:{'content-type':'application/json'},
+        body:JSON.stringify({to:phone, jobs:[job], history})}).catch(()=>{});
+  showSentCard('✅ 문자를 보냈어요', job, 'send'); setStatus('');
+  const done=(nm?nm+' 어르신, ':'')+'말씀하신 번호로 문자를 보내드렸어요.';
+  history.push({role:'assistant',content:done}); say(done); offerSms=false;
+  await speak(done);
+  if(!active) return;
+  // 추가 제안 (어르신이 찾으시는 것과 비슷한 다른 일자리)
+  const fu='그리고 어르신이 찾으시는 일자리와 비슷하거나, 알려드릴 만한 다른 일자리가 또 있으면, 그것도 문자로 보내드릴까요?';
+  awaitingFollowup=true; history.push({role:'assistant',content:fu}); say(fu); await speak(fu); listen();
+}
+kwrap.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)return; const a=b.dataset.act;
+  if(a==='cyes'){ doSend(); return; }
+  if(a==='sdone'){ kwrap.classList.add('hidden'); kpSent.classList.add('off'); return; }
+  if(a==='cno'){ phone=''; renderNum(); kpConfirm.classList.add('off'); kpEntry.classList.remove('off'); speak('네, 다시 눌러 주세요.'); return; }
+  if(a==='del'){ phone=phone.slice(0,-1); return renderNum(); }
+  if(a==='send'){ if(phone.length<10){ num.textContent='번호를 확인해 주세요'; return; } openConfirm(); return; }
+  if(phone.length<11){ phone+=b.textContent.trim(); renderNum(); }});
+// 문자 받기 버튼 (음성 인식 안 돼도 항상 열 수 있게)
+smsBtn.addEventListener('click',()=>{ if(active) openKeypad(); });
+
+// ---- 시작/종료 ----
+async function start(){
+  active=true; history=[]; offerSms=false; pickedJob=null; awaitingFollowup=false;
+  call.classList.remove('invite'); hang.classList.add('show'); smsBtn.style.display='none';
+  const greet='안녕하세요, 어르신. 저는 말벗 이음이예요. 무엇을 도와드릴까요?';
+  history.push({role:'assistant',content:greet}); say(greet);
+  await speak(greet); listen();
+}
+function end(){ active=false; clearIdle(); if(rec)try{rec.stop()}catch(e){} audio.pause();
+  call.classList.add('invite'); hang.classList.remove('show'); smsBtn.style.display='none'; typerow.classList.remove('show'); kwrap.classList.add('hidden');
+  setStatus(''); say('수화기를 들고<br/>아래 초록 버튼을<br/>눌러주세요.'); }
+call.addEventListener('click',()=>{ if(!active) start(); });
+$('#hangBtn').onclick=end;
+</script>
+</body>
+</html>

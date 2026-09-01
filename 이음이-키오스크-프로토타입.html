@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta name="robots" content="noindex, nofollow"/>
+<title>이음이 · 어르신 말벗 키오스크 (프로토타입)</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{ --brand:#15704f; --green:#59b25f; --line:#3f8fbf; --ink:#183a56; }
+  html,body{height:100%}
+  body{font-family:'Noto Sans KR',sans-serif;background:#e9eef1;color:var(--ink);
+    display:flex;align-items:center;justify-content:center;min-height:100vh;overflow:hidden}
+  .material-symbols-outlined{font-variation-settings:'FILL' 1}
+
+  /* 세로형 키오스크 프레임 */
+  .frame{position:relative;width:min(430px,95vw);height:min(94vh,calc(95vw*16/9));aspect-ratio:9/16;
+    background:#f4f3f1 url('assets/prototype/배경칼라.png') center/cover no-repeat;
+    border:2px solid #dfe3e6;border-radius:16px;overflow:hidden;
+    box-shadow:0 30px 70px -25px rgba(0,0,0,.4)}
+
+  /* 캐릭터 — 1.5배 확대(바닥 고정) */
+  .char{position:absolute;left:-5%;bottom:0;width:74%;height:110%;z-index:2;
+    transform:scale(1.5);transform-origin:bottom center}
+  .char img{width:100%;height:100%;object-fit:contain;object-position:bottom center}
+
+  /* 말풍선 — 한글은 단어 단위로만 줄바꿈(음절 깨짐 방지) */
+  .bubble{position:absolute;top:6%;right:4%;left:43%;z-index:3;background:#fff;
+    border:3px solid var(--line);border-radius:26px;padding:20px 18px;
+    display:flex;align-items:center;justify-content:center;text-align:center;
+    font-size:25px;line-height:1.5;font-weight:800;color:var(--ink);word-break:keep-all;
+    box-shadow:0 14px 30px -18px rgba(63,143,191,.55);transition:.3s}
+  .bubble.hide{opacity:0;transform:translateY(8px)}
+
+  /* 초록 통화 버튼 (아래 버튼) */
+  .call{position:absolute;right:9%;bottom:11%;z-index:4;width:150px;height:150px;cursor:pointer;
+    border:none;background:none;padding:0;border-radius:50%}
+  .call img{width:100%;height:100%;display:block;border-radius:50%}
+  .call.invite{animation:invite 1.3s ease-in-out infinite}
+  @keyframes invite{0%,100%{transform:scale(1)}50%{transform:scale(1.09)}}
+  .call.talking{animation:invite .5s ease-in-out infinite}
+  .call.listening::before,.call.listening::after{content:"";position:absolute;inset:4px;border-radius:50%;
+    border:3px solid var(--green);animation:ping 1.4s ease-out infinite;pointer-events:none}
+  .call.listening::after{animation-delay:.7s}
+  @keyframes ping{0%{transform:scale(1);opacity:.6}100%{transform:scale(1.65);opacity:0}}
+  .call .cap{display:none}
+
+  /* 듣는 중 칩 */
+  .listen{position:absolute;bottom:10%;left:6%;z-index:4;background:#eef7ef;border:2px solid var(--green);
+    color:var(--brand);font-weight:800;font-size:16px;border-radius:999px;padding:9px 15px;
+    display:flex;align-items:center;gap:7px;opacity:0;transition:.3s;pointer-events:none}
+  .listen.show{opacity:1}
+  .dots span{width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;margin:0 2px;animation:bo 1s infinite}
+  .dots span:nth-child(2){animation-delay:.15s}.dots span:nth-child(3){animation-delay:.3s}
+  @keyframes bo{0%,60%,100%{transform:translateY(0);opacity:.4}30%{transform:translateY(-6px);opacity:1}}
+
+  /* 통화 종료 (프로토타입 전용) */
+  .hang{position:absolute;top:12px;right:14px;z-index:9;display:none}
+  .hang.show{display:block}
+  .hang button{font-family:inherit;font-weight:800;font-size:13px;border:none;border-radius:999px;
+    padding:8px 14px;background:rgba(239,68,68,.92);color:#fff;cursor:pointer;display:flex;align-items:center;gap:5px}
+  .hang .material-symbols-outlined{font-size:17px}
+
+  /* 키패드 */
+  .kwrap{position:absolute;inset:0;z-index:15;background:rgba(21,112,79,.4);backdrop-filter:blur(2px);
+    display:flex;align-items:center;justify-content:center}
+  .kwrap.hidden{display:none}
+  .kp{background:#fff;border-radius:24px;padding:22px;width:88%;box-shadow:0 24px 50px -18px rgba(0,0,0,.4)}
+  .kp .t{font-size:20px;font-weight:900;text-align:center;color:var(--brand)}
+  .kp .num{font-size:34px;font-weight:900;text-align:center;letter-spacing:2px;min-height:46px;margin-top:6px;color:var(--ink)}
+  .g{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+  .g button{font-family:inherit;font-size:28px;font-weight:900;padding:14px 0;border-radius:14px;border:2px solid #e2e8f0;background:#f8fafc;cursor:pointer}
+  .g button:active{background:#e2e8f0}
+  .g .del{color:#ef4444;font-size:18px}
+  .g .send{grid-column:span 3;background:var(--brand);color:#fff;border-color:var(--brand);font-size:22px}
+  .off{display:none}
+  .big{font-size:44px!important;color:var(--brand)}
+  .cbtns{display:flex;gap:12px;margin-top:18px}
+  .cbtns button{flex:1;font-family:inherit;font-size:22px;font-weight:900;padding:20px 0;border-radius:16px;border:none;cursor:pointer}
+  .cok{background:var(--brand);color:#fff}
+  .cno{background:#e2e8f0;color:#475569}
+  .cmsg{margin-top:10px;font-size:17px;font-weight:800;min-height:22px}
+  .cmsg.ok{color:var(--brand)} .cmsg.warn{color:#dc2626}
+  .rosterctl{position:absolute;top:10px;left:12px;z-index:12;font-size:11px;color:#9aa6ad}
+  .rosterctl input{vertical-align:middle}
+  .note{position:absolute;bottom:2px;left:0;right:0;text-align:center;font-size:10px;color:#aeb9bf;z-index:1}
+</style>
+</head>
+<body>
+<div class="frame">
+
+  <!-- 캐릭터 -->
+  <div class="char" id="char"><img src="assets/prototype/이음이프린트티.png" alt="이음이"/></div>
+
+  <!-- 말풍선 -->
+  <div class="bubble" id="bubble">수화기를 들고<br/>아래버튼을 눌러주세요.<br/><br/>이음이가 도와드릴게요.</div>
+
+  <!-- 듣는 중 칩 -->
+  <div class="listen" id="listen">
+    <span class="material-symbols-outlined" style="font-size:20px">hearing</span>
+    말씀을 듣고 있어요 <span class="dots"><span></span><span></span><span></span></span>
+  </div>
+
+  <!-- 초록 통화 버튼 -->
+  <button class="call invite" id="call">
+    <img src="assets/prototype/전화아이콘.png" alt="통화"/>
+    <span class="cap" id="cap">시작하기</span>
+  </button>
+
+  <!-- 통화 종료 -->
+  <div class="hang" id="hang"><button id="hangBtn"><span class="material-symbols-outlined">call_end</span>통화 종료</button></div>
+
+  <!-- 키패드 -->
+  <div class="kwrap hidden" id="kwrap">
+    <div class="kp" id="kpEntry">
+      <div class="t">전화번호를 눌러 주세요</div>
+      <div class="num" id="num">​</div>
+      <div class="g">
+        <button>1</button><button>2</button><button>3</button>
+        <button>4</button><button>5</button><button>6</button>
+        <button>7</button><button>8</button><button>9</button>
+        <button class="del" data-act="del">지우기</button><button>0</button><button class="del" data-act="del"><span class="material-symbols-outlined" style="font-size:24px">backspace</span></button>
+        <button class="send" data-act="send">문자 보내기</button>
+      </div>
+    </div>
+    <!-- 번호 확인(복창) -->
+    <div class="kp off" id="kpConfirm">
+      <div class="t" id="cTitle">이 번호로 문자를 보내드릴까요?</div>
+      <div class="num big" id="numConfirm">​</div>
+      <div class="cmsg" id="cmsg"></div>
+      <div class="cbtns">
+        <button class="cok" id="cYes" data-act="confirm-yes">예, 보내주세요</button>
+        <button class="cno" data-act="confirm-no">아니요, 다시</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">※ 프로토타입 — 실제 키오스크는 물리 수화기(들면 시작·놓으면 대기). 화면에선 초록 버튼으로 시연합니다.</div>
+  <div class="rosterctl"><label><input type="checkbox" id="rosterTgl"/> 회원명단 대조</label></div>
+</div>
+
+<script>
+(() => {
+  const $=s=>document.querySelector(s);
+  const charEl=$('#char'), bubble=$('#bubble'), listen=$('#listen'), call=$('#call'),
+        cap=$('#cap'), hang=$('#hang'), hangBtn=$('#hangBtn'), kwrap=$('#kwrap'), num=$('#num');
+
+  const IDLE_HTML='수화기를 들고<br/>아래버튼을 눌러주세요.<br/><br/>이음이가 도와드릴게요.';
+
+  // ===== 실제 공고 데이터 (한국노인인력개발원 노인구인 + 워크넷 원문, 서초 인근 접수중) =====
+  // 자동 생성: scripts/build-ieumi-jobs.py (2026-07-05 기준)
+  const JOBS=[
+    {gu:'관악구', job:'아파트 미화원(건물 청소)', pay:'월급 150만원', to:'8월 31일'},
+    {gu:'동작구', job:'학교 급식 배식 도우미',     pay:'시급 만 삼백이십 원', to:'8월 4일'},
+    {gu:'강남구', job:'아파트 미화원',            pay:'월급 147만원', to:'8월 24일'},
+    {gu:'강남구', job:'아파트 경비원',            pay:'월급 219만원', to:'7월 6일'},
+  ];
+  function buildScript(j){
+    return [
+      {t:'bot',  text:'안녕하세요, 어르신. 저는 말벗 이음이예요.'},
+      {t:'bot',  text:'무엇을 도와드릴까요?'},
+      {t:'listen'},
+      {t:'bot',  text:'네, 일자리를 찾고 계시는군요. 잘 오셨어요.'},
+      {t:'bot',  text:'걷거나 서 있는 건 불편하지 않으세요?'},
+      {t:'listen'},
+      {t:'bot',  text:`좋습니다. ${j.gu}에 ${j.job} 일이 지금 사람을 구하고 있어요.`},
+      {t:'bot',  text:`${j.pay} 정도이고, ${j.to}까지 신청해요.`},
+      {t:'bot',  text:'이 일을 정리해서 문자로 보내드릴까요?'},
+      {t:'listen'},
+      {t:'ask',  text:'네! 문자를 받으실 전화번호를 눌러 주세요.'},
+      {t:'bot',  text:'문자를 보내드렸어요. 관심 있으시면 담당 선생님이 도와드려요.'},
+      {t:'bye',  text:'도움이 되었길 바라요. 안녕히 가세요, 어르신!'},
+    ];
+  }
+  let script=[], jobIdx=0;
+  let idx=0, timer=null, active=false;
+
+  // ===== 무응답 자동 초기화 =====
+  const IDLE_1=12000, IDLE_2=8000;   // 12초 무응답→확인, 이후 8초 더 무응답→홈 복귀
+  let idleTimer=null, checkTimer=null, checking=false, awaitingKeypad=false;
+  const clearIdle=()=>{clearTimeout(idleTimer);clearTimeout(checkTimer);};
+  function armIdle(){ checking=false; clearIdle(); if(active) idleTimer=setTimeout(doCheckIn,IDLE_1); }
+  function doCheckIn(){
+    if(!active)return; checking=true;
+    if(awaitingKeypad) closeKeypad();
+    say('어르신, 듣고 계세요?<br/>계속 도와드릴까요?');
+    speak('어르신, 듣고 계세요? 계속 도와드릴까요?');
+    checkTimer=setTimeout(timeoutHome,IDLE_2);
+  }
+  function timeoutHome(){
+    if(!active)return;
+    say('통화를 마칠게요.<br/>안녕히 가세요. 📞');
+    speak('통화를 마칠게요. 안녕히 가세요.');
+    setTimeout(endCall,1800);
+  }
+  function userActivity(){
+    if(!active)return;
+    if(checking){ clearIdle(); checking=false;
+      if(awaitingKeypad){ say('네, 전화번호를 눌러 주세요.'); openKeypad(); return; } }
+    armIdle();
+  }
+
+  // TTS
+  let koVoice=null;
+  const loadVoice=()=>{const vs=speechSynthesis.getVoices();koVoice=vs.find(v=>v.lang==='ko-KR')||vs.find(v=>/ko/i.test(v.lang))||null;};
+  if('speechSynthesis' in window){loadVoice();speechSynthesis.onvoiceschanged=loadVoice;}
+  const talkOn=()=>{charEl.classList.add('talking');call.classList.add('talking');};
+  const talkOff=()=>{charEl.classList.remove('talking');call.classList.remove('talking');};
+  function speak(text,onEnd){
+    if(!('speechSynthesis' in window))return fb(text,onEnd);
+    try{
+      speechSynthesis.cancel();
+      const u=new SpeechSynthesisUtterance(text);u.lang='ko-KR';if(koVoice)u.voice=koVoice;u.rate=.92;u.pitch=1.05;
+      u.onstart=talkOn;u.onend=()=>{talkOff();onEnd&&onEnd();};u.onerror=()=>{talkOff();onEnd&&onEnd();};
+      speechSynthesis.speak(u);
+      setTimeout(()=>{if(!speechSynthesis.speaking&&!speechSynthesis.pending&&charEl.classList.contains('talking')){talkOff();onEnd&&onEnd();}},400);
+    }catch(e){fb(text,onEnd);}
+  }
+  function fb(text,onEnd){talkOn();setTimeout(()=>{talkOff();onEnd&&onEnd();},Math.max(1500,text.length*130));}
+
+  function say(html){
+    listen.classList.remove('show');call.classList.remove('listening');
+    bubble.innerHTML=html;bubble.classList.remove('hide');
+  }
+  function showListening(){
+    bubble.classList.add('hide');listen.classList.add('show');call.classList.add('listening');
+  }
+
+  function next(){
+    if(!active)return;
+    armIdle();
+    if(idx>=script.length)return endCall();
+    const s=script[idx++];
+    if(s.t==='listen'){showListening();timer=setTimeout(next,2600);return;}
+    if(s.t==='ask'){say(s.text);speak(s.text,openKeypad);return;}
+    say(s.text);
+    speak(s.text,()=>{ if(s.t==='bye'){timer=setTimeout(promptHang,900);return;} timer=setTimeout(next,550); });
+  }
+  function promptHang(){say('통화가 끝났어요.<br/>수화기를 내려놓아 주세요. 📞');}
+
+  // 키패드 + 번호 확인(복창) + 회원명단 대조
+  let phone='', awaitingConfirm=false;
+  const kpEntry=$('#kpEntry'), kpConfirm=$('#kpConfirm'), numConfirm=$('#numConfirm'),
+        cTitle=$('#cTitle'), cmsg=$('#cmsg'), cYes=$('#cYes');
+  // 회원명단: 운영 대시보드가 저장한 것(localStorage) 우선, 없으면 샘플
+  const MEMBERS=(function(){try{const a=JSON.parse(localStorage.getItem('ieumi_roster')||'null');
+    if(Array.isArray(a)&&a.length){const m={};a.forEach(x=>m[x.phone]=x.name);return m;}}catch(e){}
+    return {'01012343456':'김순자','01023454567':'박영수','01034565678':'이말순',
+            '01045676789':'최복동','01078901234':'김철수','01099998888':'한복례'};})();
+  let rosterOn=localStorage.getItem('ieumi_roster_on')==='1';   // 운영 설정 반영(로컬 토글로 override 가능)
+  const _rt=$('#rosterTgl'); if(_rt){_rt.checked=rosterOn;_rt.addEventListener('change',e=>{rosterOn=e.target.checked;});}
+  const KO={'0':'공','1':'일','2':'이','3':'삼','4':'사','5':'오','6':'육','7':'칠','8':'팔','9':'구'};
+  function fmtPhone(p){let d=p;if(d.length>3&&d.length<=7)d=d.slice(0,3)+'-'+d.slice(3);else if(d.length>7)d=d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7,11);return d;}
+  function digitsKo(p){return [p.slice(0,3),p.slice(3,7),p.slice(7,11)].filter(Boolean).map(seg=>seg.split('').map(d=>KO[d]||d).join('')).join(', ');}
+  function openKeypad(){phone='';render();awaitingKeypad=true;awaitingConfirm=false;kpEntry.classList.remove('off');kpConfirm.classList.add('off');kwrap.classList.remove('hidden');armIdle();}
+  function closeKeypad(){kwrap.classList.add('hidden');kpEntry.classList.remove('off');kpConfirm.classList.add('off');awaitingConfirm=false;}
+  function render(){num.textContent=fmtPhone(phone)||'​';}
+  function openConfirm(){
+    kpEntry.classList.add('off');kpConfirm.classList.remove('off');
+    numConfirm.textContent=fmtPhone(phone);awaitingConfirm=true;
+    if(rosterOn){
+      const nm=MEMBERS[phone];
+      if(nm){cTitle.textContent='이 번호로 문자를 보내드릴까요?';cmsg.className='cmsg ok';cmsg.textContent='✔ '+nm+' 어르신 번호가 맞아요';cYes.textContent='예, 보내주세요';
+        speak(nm+' 어르신, '+digitsKo(phone)+' 번호로 문자를 보내드릴까요?');}
+      else{cTitle.textContent='등록되지 않은 번호예요';cmsg.className='cmsg warn';cmsg.textContent='⚠ 번호를 다시 확인해 주세요';cYes.textContent='그래도 보내기';
+        speak(digitsKo(phone)+' 번호는 등록되어 있지 않아요. 다시 확인해 주세요.');}
+    }else{
+      cTitle.textContent='이 번호로 문자를 보내드릴까요?';cmsg.className='cmsg';cmsg.textContent='';cYes.textContent='예, 보내주세요';
+      speak(digitsKo(phone)+' 번호로 문자를 보내드릴까요?');
+    }
+    armIdle();
+  }
+  kwrap.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;armIdle();const a=b.dataset.act;
+    if(a==='confirm-yes'){awaitingKeypad=false;awaitingConfirm=false;closeKeypad();next();return;}
+    if(a==='confirm-no'){phone='';render();kpConfirm.classList.add('off');kpEntry.classList.remove('off');awaitingConfirm=false;speak('네, 다시 눌러 주세요.');return;}
+    if(awaitingConfirm)return;
+    if(a==='del'){phone=phone.slice(0,-1);return render();}
+    if(a==='send'){if(phone.length<8){num.textContent='번호를 확인해 주세요';return;}openConfirm();return;}
+    if(phone.length<11){phone+=b.textContent.trim();render();}});
+
+  function startCall(){
+    active=true;idx=0;awaitingKeypad=false;
+    script=buildScript(JOBS[jobIdx % JOBS.length]); jobIdx++;   // 통화마다 실제 공고 순환
+    call.classList.remove('invite');cap.textContent='통화 중';hang.classList.add('show');
+    next();
+  }
+  function endCall(){
+    active=false;clearTimeout(timer);clearIdle();checking=false;awaitingKeypad=false;
+    if('speechSynthesis' in window)speechSynthesis.cancel();
+    talkOff();listen.classList.remove('show');call.classList.remove('listening');
+    closeKeypad();hang.classList.remove('show');
+    call.classList.add('invite');cap.textContent='시작하기';
+    say(IDLE_HTML);
+  }
+
+  call.addEventListener('click',()=>{ if(!active) startCall(); });
+  hangBtn.addEventListener('click',endCall);
+  // 화면 반응 = 무응답 타이머 리셋
+  document.querySelector('.frame').addEventListener('click',e=>{
+    if(!active) return;
+    if(e.target.closest('#call')||e.target.closest('#hangBtn')) return;
+    userActivity();
+  });
+})();
+</script>
+</body>
+</html>

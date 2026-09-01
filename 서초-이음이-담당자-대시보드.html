@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>이음이 · 관리자 대시보드 (서초 어르신 행복이음)</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<style>
+ *{box-sizing:border-box;margin:0;padding:0}
+ :root{--brand:#15704f;--brand2:#1f9b6c;--warm:#f59e0b;--cream:#fbf7ef}
+ body{font-family:'Noto Sans KR',sans-serif;color:#14372a;background:#eef2f0}
+ .material-symbols-outlined{font-variation-settings:'FILL' 1;vertical-align:middle}
+ header{background:linear-gradient(120deg,#0f5c40,#1f9b6c);color:#fff;padding:16px 22px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
+ header .lt{display:flex;align-items:center;gap:10px}
+ header .logo{background:#fff;color:var(--brand);border-radius:9px;padding:3px 9px;font-weight:900;font-size:14px}
+ header h1{font-size:18px;font-weight:800}
+ header .rt{font-size:13px;color:#d9f5ea}
+ .wrap{max-width:1100px;margin:0 auto;padding:18px 16px}
+ /* 통계 */
+ .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+ .stat{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:14px 16px}
+ .stat .n{font-size:26px;font-weight:900;color:var(--brand)}
+ .stat.urg .n{color:#dc2626}
+ .stat .l{font-size:13px;color:#64748b;font-weight:700;margin-top:2px}
+ /* 필터 */
+ .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+ .tab{background:#fff;border:1.5px solid #e2e8f0;border-radius:999px;padding:7px 15px;font-weight:800;font-size:14px;cursor:pointer;color:#475569}
+ .tab.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+ .setbar{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:10px 14px;display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+ .setbar .hint{color:#94a3b8;font-size:12px}
+ .rstate{font-weight:800;color:#dc2626}
+ .rstate.on{color:#15803d}
+ .switch{position:relative;display:inline-block;width:44px;height:24px}
+ .switch input{opacity:0;width:0;height:0}
+ .sl{position:absolute;inset:0;background:#cbd5e1;border-radius:999px;transition:.2s;cursor:pointer}
+ .sl::before{content:"";position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
+ .switch input:checked + .sl{background:var(--brand)}
+ .switch input:checked + .sl::before{transform:translateX(20px)}
+ .b-mem{background:#dcfce7;color:#15803d}.b-unreg{background:#fef3c7;color:#b45309}
+ /* 카드 */
+ .card{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:16px 18px;margin-bottom:12px;border-left:5px solid #cbd5e1}
+ .card.c-urgent{border-left-color:#dc2626;background:#fff5f5}
+ .card.c-job{border-left-color:#1f9b6c}
+ .card.c-health{border-left-color:#3b82f6}
+ .card.c-welfare{border-left-color:#8b5cf6}
+ .card.c-etc{border-left-color:#94a3b8}
+ .card.done-c{opacity:.6}
+ .top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+ .pill{font-size:11px;font-weight:800;border-radius:999px;padding:2px 9px;white-space:nowrap}
+ .p-job{background:#dcfce7;color:#15803d}.p-health{background:#dbeafe;color:#1d4ed8}
+ .p-welfare{background:#ede9fe;color:#6d28d9}.p-urgent{background:#fee2e2;color:#b91c1c}
+ .p-etc{background:#e2e8f0;color:#475569}
+ .badge{font-size:11px;font-weight:800;border-radius:6px;padding:2px 7px}
+ .b-urg{background:#dc2626;color:#fff}.b-fu{background:#fef3c7;color:#b45309}
+ .time{margin-left:auto;color:#94a3b8;font-size:12px}
+ .name{font-size:17px;font-weight:900}
+ .summary{margin:5px 0;color:#334155;line-height:1.5}
+ .chips{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
+ .chip{background:#f1f5f9;border-radius:8px;padding:3px 9px;font-size:12px;color:#475569;font-weight:600}
+ details{margin-top:6px}
+ summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--brand)}
+ .tr{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin-top:6px}
+ .tr .u{color:#64748b}.tr .b{color:var(--brand);font-weight:600}
+ .tr div{margin:3px 0;font-size:13px;line-height:1.5}
+ .actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px dashed #e2e8f0}
+ .st{display:flex;gap:4px}
+ .st button{font-family:inherit;font-size:12px;font-weight:800;border:1.5px solid #e2e8f0;background:#fff;color:#475569;border-radius:8px;padding:5px 11px;cursor:pointer}
+ .st button.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+ .memo{flex:1;min-width:150px;border:1px solid #e2e8f0;border-radius:8px;padding:6px 10px;font-family:inherit;font-size:13px}
+ .fu{display:flex;align-items:center;gap:5px;font-size:12px;font-weight:700;color:#b45309;cursor:pointer}
+ footer{text-align:center;color:#94a3b8;font-size:12px;padding:20px}
+</style>
+</head>
+<body>
+<header>
+  <div class="lt"><span class="logo">이음이</span><h1>담당자(상담) 대시보드 · 서초 어르신 행복이음 센터</h1></div>
+  <div class="rt">2026-07-05 (토) · 키오스크 실시간 접수</div>
+</header>
+
+<div class="wrap">
+  <div class="setbar">
+    <span class="material-symbols-outlined" style="color:#15704f">badge</span>
+    <b>회원명단 대조</b>
+    <span class="rstate" id="rstate">비활성</span>
+    <span class="hint">※ 회원명단·대조 on/off는 <b>관리자(운영) 대시보드</b>에서 설정합니다. 여기선 대조 결과만 표시됩니다.</span>
+  </div>
+  <div class="stats" id="stats"></div>
+  <div class="tabs" id="tabs"></div>
+  <div id="list"></div>
+  <footer>(주)플레이포 · 이음이 관리자 대시보드 (프로토타입) · 키오스크 통화 → AI 요약·분류 → 담당자 전달</footer>
+</div>
+
+<script>
+// ===== 회원명단: 운영 대시보드가 저장한 것(localStorage) 우선, 없으면 샘플 =====
+function loadRoster(){
+  try{const a=JSON.parse(localStorage.getItem('ieumi_roster')||'null');
+    if(Array.isArray(a)&&a.length){const m={};a.forEach(x=>m[x.phone]=x.name);return m;}}catch(e){}
+  return {'01012343456':'김순자','01023454567':'박영수','01034565678':'이말순',
+          '01045676789':'최복동','01078901234':'김철수','01099998888':'한복례'};
+}
+const MEMBERS=loadRoster();
+
+// ===== 시연 데이터 (키오스크 통화 → AI 요약·분류) =====
+const DATA=[
+ {id:'a1',cat:'job',name:'김순자',phone:'01012343456',time:'오늘 10:24',urgent:false,followup:true,
+  summary:'용돈벌이 일자리 문의 → 관악구 아파트 미화원(월급 150만원) 안내·문자 발송',
+  chips:['관심: 관악 미화원','월급 150만원','문자 발송됨'],
+  tr:[['u','일 없어서 용돈이라도 벌까 하는데…'],['b','관악구에 아파트 미화원 일이 있어요. 월급 150만원 정도예요.'],['u','그거 좋네, 문자로 보내줘.'],['b','문자 보내드렸어요.']]},
+ {id:'a2',cat:'job',name:'박영수',phone:'01023454567',time:'오늘 10:41',urgent:false,followup:false,
+  summary:'가벼운 일 원함 → 동작구 학교 급식 배식 도우미(시급 10,320원) 안내·문자 발송',
+  chips:['관심: 동작 급식도우미','시급 10,320원','문자 발송됨'],
+  tr:[['u','앉아서 하는 가벼운 일 없나?'],['b','동작구 학교 급식 배식 도우미가 있어요. 시급 만 삼백이십 원이에요.'],['b','문자 보내드렸어요.']]},
+ {id:'a3',cat:'health',name:'이말순',phone:'01034565678',time:'오늘 11:02',urgent:false,followup:true,
+  summary:'무릎 통증으로 병원 가고 싶으나 혼자 이동 어려움 → 정형외과 유형 안내 + 교통지원 담당 연결 요청',
+  chips:['건강·의료','교통지원 필요','담당 연결 요청'],
+  tr:[['u','무릎이 아파서 병원엘 가야 하는데 혼자는 못 가.'],['b','무릎이면 정형외과예요. 다만 병원 추천은 어렵고, 담당 선생님께 교통지원을 전해드릴게요.'],['u','그래 부탁해.']]},
+ {id:'a4',cat:'urgent',name:'최복동',phone:'01045676789',time:'오늘 11:15',urgent:true,followup:true,
+  summary:'🚨 통화 중 "가슴이 아프다" 발화 → 즉시 119·직원호출 안내함. 긴급 확인 필요',
+  chips:['긴급','119 안내함','즉시 확인'],
+  tr:[['u','가슴이 답답하고 아파…'],['b','어르신, 위급하실 수 있어요. 지금 바로 옆 선생님을 부르거나 119에 연락하세요!']]},
+ {id:'a5',cat:'welfare',name:'익명',phone:'',time:'오늘 11:33',urgent:false,followup:true,
+  summary:'독거 어르신, 식사 어려움 → 도시락·재가돌봄 안내, 담당 연결 요청',
+  chips:['복지·돌봄','독거','도시락 문의'],
+  tr:[['u','혼자 사는데 끼니 챙기기가 힘들어.'],['b','도시락과 돌봄 서비스를 담당 선생님께 연결해드릴게요.']]},
+ {id:'a6',cat:'etc',name:'정순자',phone:'01067890123',time:'오늘 11:50',urgent:false,followup:true,
+  summary:'⭐ 미준비 서비스 — "목욕 도와주는 데 없냐" 문의 → 접수(담당자 확인). 다음 서비스 후보 데이터',
+  chips:['미분류','목욕지원 요청','서비스 검토'],
+  tr:[['u','목욕하는 거 도와주는 데는 없나?'],['b','그건 제가 잘 몰라서, 담당 선생님께 꼭 전해드릴게요.']]},
+ {id:'a7',cat:'job',name:'김철수',phone:'01078901234',time:'오늘 12:07',urgent:false,followup:false,
+  summary:'경비 일 희망 → 강남구 아파트 경비원(월급 219만원) 안내·문자 발송',
+  chips:['관심: 강남 경비원','월급 219만원','문자 발송됨'],
+  tr:[['u','경비 일 같은 거 있나?'],['b','강남구에 아파트 경비원 자리가 있어요. 월급 219만원 정도예요.'],['b','문자 보내드렸어요.']]},
+];
+const CATS={job:['일자리','p-job'],health:['건강·의료','p-health'],welfare:['복지·돌봄','p-welfare'],urgent:['긴급','p-urgent'],etc:['미분류','p-etc']};
+const KEY='ieumi_admin_v1';
+let state=JSON.parse(localStorage.getItem(KEY)||'{}');
+let filter='all';
+let rosterOn=localStorage.getItem('ieumi_roster_on')==='1';   // 운영 대시보드 설정 반영
+const save=()=>localStorage.setItem(KEY,JSON.stringify(state));
+const mask=p=>p?('010-****-'+p.slice(-4)):'';
+function memBadge(d){
+  if(!rosterOn||!d.phone) return '';
+  const nm=MEMBERS[d.phone];
+  return nm?`<span class="badge b-mem">✔ 회원확인 ${nm}</span>`
+           :`<span class="badge b-unreg">⚠ 미등록 번호</span>`;
+}
+const S=id=>state[id]||(state[id]={status:'접수',fu:DATA.find(d=>d.id===id).followup,memo:''});
+DATA.forEach(d=>S(d.id));
+
+function renderStats(){
+  const done=DATA.filter(d=>state[d.id].status==='완료').length;
+  const fu=DATA.filter(d=>state[d.id].fu&&state[d.id].status!=='완료').length;
+  const urg=DATA.filter(d=>d.urgent&&state[d.id].status!=='완료').length;
+  const sms=DATA.filter(d=>d.chips.some(c=>c.includes('발송'))).length;
+  document.getElementById('stats').innerHTML=`
+   <div class="stat"><div class="n">${DATA.length}</div><div class="l">오늘 접수</div></div>
+   <div class="stat urg"><div class="n">${urg}</div><div class="l">긴급 확인</div></div>
+   <div class="stat"><div class="n">${fu}</div><div class="l">후속연락 필요</div></div>
+   <div class="stat"><div class="n">${sms}</div><div class="l">문자 발송</div></div>
+   <div class="stat"><div class="n">${done}</div><div class="l">처리 완료</div></div>`;
+}
+function renderTabs(){
+  const cnt=c=>c==='all'?DATA.length:DATA.filter(d=>d.cat===c).length;
+  const tabs=[['all','전체'],['urgent','긴급'],['job','일자리'],['health','건강·의료'],['welfare','복지·돌봄'],['etc','미분류']];
+  document.getElementById('tabs').innerHTML=tabs.map(([k,l])=>
+   `<div class="tab ${filter===k?'on':''}" data-f="${k}">${l} <b>${cnt(k)}</b></div>`).join('');
+}
+function renderList(){
+  const rows=DATA.filter(d=>filter==='all'||d.cat===filter);
+  document.getElementById('list').innerHTML=rows.map(d=>{
+    const s=state[d.id];const[cl,pc]=CATS[d.cat];
+    const tr=d.tr.map(([w,t])=>`<div class="${w}">${w==='u'?'👵 어르신':'🧑‍🦳 이음이'}: ${t}</div>`).join('');
+    const chips=[...(d.phone?['📱 '+mask(d.phone)]:[]),...d.chips].map(c=>`<span class="chip">${c}</span>`).join('');
+    const stbtn=['접수','처리중','완료'].map(x=>`<button class="${s.status===x?'on':''}" data-st="${d.id}|${x}">${x}</button>`).join('');
+    return `<div class="card c-${d.cat} ${s.status==='완료'?'done-c':''}">
+      <div class="top">
+        <span class="pill ${pc}">${cl}</span>
+        ${d.urgent?'<span class="badge b-urg">🚨 긴급</span>':''}
+        ${s.fu?'<span class="badge b-fu">후속연락</span>':''}
+        ${memBadge(d)}
+        <span class="name">${d.name} 어르신</span>
+        <span class="time">${d.time}</span>
+      </div>
+      <div class="summary">${d.summary}</div>
+      <div class="chips">${chips}</div>
+      <details><summary>💬 대화 원문 보기</summary><div class="tr">${tr}</div></details>
+      <div class="actions">
+        <div class="st">${stbtn}</div>
+        <label class="fu"><input type="checkbox" data-fu="${d.id}" ${s.fu?'checked':''}/> 후속연락</label>
+        <input class="memo" data-memo="${d.id}" placeholder="담당자 메모…" value="${(s.memo||'').replace(/"/g,'&quot;')}"/>
+      </div>
+    </div>`;
+  }).join('')||'<p style="color:#94a3b8;padding:20px;text-align:center">해당 분류의 접수가 없습니다.</p>';
+}
+function renderAll(){renderStats();renderTabs();renderList();}
+document.addEventListener('click',e=>{
+  const t=e.target.closest('[data-f]');if(t){filter=t.dataset.f;renderAll();return;}
+  const b=e.target.closest('[data-st]');if(b){const[id,x]=b.dataset.st.split('|');state[id].status=x;save();renderAll();return;}
+});
+document.addEventListener('change',e=>{
+  const f=e.target.closest('[data-fu]');if(f){state[f.dataset.fu].fu=f.checked;save();renderStats();}
+});
+document.addEventListener('input',e=>{
+  const m=e.target.closest('[data-memo]');if(m){state[m.dataset.memo].memo=m.value;save();}
+});
+// 회원명단 대조 상태(운영 대시보드 설정 반영, 읽기전용)
+function syncRoster(){const rs=document.getElementById('rstate');rs.textContent=rosterOn?'활성':'비활성';rs.classList.toggle('on',rosterOn);}
+syncRoster();
+renderAll();
+</script>
+</body>
+</html>
