@@ -44,12 +44,30 @@ const jobsText = (jobs) => (!jobs || !jobs.length) ? '(일자리 목록 없음)'
       .filter(([k, v]) => v && k !== 'link' && k !== 'id')
       .map(([k, v]) => `${JLABEL[k] || k}: ${v}`).join(' / ')).join('\n');
 
+// Anthropic Messages API: history must begin with a user turn, and same-role
+// turns must not repeat. The kiosk seeds history with Ieumi's spoken greeting and
+// can queue two assistant lines in a row, so normalise before sending.
+function toMessages(history) {
+  const out = [];
+  for (const m of history || []) {
+    if (!m || !m.content) continue;
+    const role = m.role === 'user' ? 'user' : 'assistant';
+    if (!out.length && role !== 'user') continue;              // drop the leading greeting
+    const last = out[out.length - 1];
+    if (last && last.role === role) last.content += '\n' + m.content;  // merge repeats
+    else out.push({ role, content: String(m.content) });
+  }
+  return out;
+}
+
 async function callClaude(history, jobs, model) {
   const sys = SYSTEM + '\n\n[일자리 목록]\n' + jobsText(jobs);
+  const msgs = toMessages(history);
+  if (!msgs.length) throw new Error('no user message yet');
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': AKEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: model || MODEL, max_tokens: 400, system: sys, messages: history }),
+    body: JSON.stringify({ model: model || MODEL, max_tokens: 400, system: sys, messages: msgs }),
   });
   const j = await r.json();
   if (j.error) throw new Error(j.error.message || 'claude error');
@@ -158,8 +176,13 @@ const server = http.createServer(async (req, res) => {
     // ---- 정적 파일 ----
     let p = decodeURIComponent(u.pathname);
     if (p === '/') p = '/이음이-키오스크-프로토타입.html';
-    const fp = path.join(ROOT, p);
-    if (!fp.startsWith(ROOT) || !fs.existsSync(fp) || fs.statSync(fp).isDirectory()) { res.writeHead(404); return res.end('not found'); }
+    const fp = path.resolve(ROOT, '.' + p);
+    const rel = path.relative(ROOT, fp);
+    const seg = rel.split(path.sep);
+    // Never serve outside the project, hidden files (.env / .git), or the server source dir.
+    const blocked = !rel || rel.startsWith('..') || path.isAbsolute(rel)
+      || seg.some(x => x.startsWith('.')) || seg[0] === 'ieumi-server';
+    if (blocked || !fs.existsSync(fp) || fs.statSync(fp).isDirectory()) { res.writeHead(404); return res.end('not found'); }
     cors(res); res.writeHead(200, { 'content-type': MIME[path.extname(fp)] || 'application/octet-stream' });
     return fs.createReadStream(fp).pipe(res);
   } catch (e) {
