@@ -4,6 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const https = require('https');
 
 // ---- .env 로드 ----
 const env = {};
@@ -25,6 +26,39 @@ const SPEAKER = env.CLOVA_SPEAKER || 'nara';   // 따뜻한 여성 음성
 const SPEED = env.CLOVA_SPEED || '1';          // 0 기본, 양수=천천히(어르신용)
 const ROOT = path.join(__dirname, '..');
 const PORT = process.env.PORT || 8791;
+
+// ---- Proxy support: Node ignores HTTPS_PROXY, unlike curl. Where the API is only
+// reachable through a local proxy, tunnel via CONNECT. No proxy set = plain fetch.
+const PROXY = process.env.HTTPS_PROXY || process.env.https_proxy || '';
+function proxyFetch(url, opts = {}) {
+  const u = new URL(url), px = new URL(PROXY);
+  const body = opts.body ? Buffer.from(opts.body) : null;
+  return new Promise((resolve, reject) => {
+    const c = http.request({ host: px.hostname, port: px.port || 80, method: 'CONNECT',
+      path: u.hostname + ':443', headers: { host: u.hostname + ':443' } });
+    c.on('error', reject);
+    c.on('connect', (pres, socket) => {
+      if (pres.statusCode !== 200) return reject(new Error('proxy CONNECT ' + pres.statusCode));
+      const headers = Object.assign({}, opts.headers);
+      if (body) headers['content-length'] = body.length;
+      const req = https.request({ socket, servername: u.hostname, host: u.hostname, agent: false,
+        path: u.pathname + u.search, method: opts.method || 'GET', headers }, (res) => {
+        const chunks = [];
+        res.on('data', d => chunks.push(d));
+        res.on('end', () => { const buf = Buffer.concat(chunks); resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode,
+          json: async () => JSON.parse(buf.toString('utf8')),
+          text: async () => buf.toString('utf8'),
+          arrayBuffer: async () => buf }); });
+      });
+      req.on('error', reject);
+      if (body) req.write(body);
+      req.end();
+    });
+    c.end();
+  });
+}
+const pfetch = (url, opts) => PROXY ? proxyFetch(url, opts) : fetch(url, opts);
 
 const SYSTEM = `당신은 '이음이', 서초 어르신 행복이음 센터의 따뜻한 AI 말벗 도우미입니다.
 규칙:
@@ -64,7 +98,7 @@ async function callClaude(history, jobs, model) {
   const sys = SYSTEM + '\n\n[일자리 목록]\n' + jobsText(jobs);
   const msgs = toMessages(history);
   if (!msgs.length) throw new Error('no user message yet');
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
+  const r = await pfetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': AKEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
     body: JSON.stringify({ model: model || MODEL, max_tokens: 400, system: sys, messages: msgs }),
@@ -79,7 +113,7 @@ async function callClaude(history, jobs, model) {
 
 async function clovaTTS(text) {
   const body = new URLSearchParams({ speaker: SPEAKER, text, format: 'mp3', speed: SPEED });
-  const r = await fetch('https://naveropenapi.apigw.ntruss.com/tts-premium/v1/tts', {
+  const r = await pfetch('https://naveropenapi.apigw.ntruss.com/tts-premium/v1/tts', {
     method: 'POST',
     headers: { 'X-NCP-APIGW-API-KEY-ID': CID, 'X-NCP-APIGW-API-KEY': CSEC, 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
@@ -89,7 +123,7 @@ async function clovaTTS(text) {
 }
 
 async function clovaSTT(audioBuf) {
-  const r = await fetch('https://naveropenapi.apigw.ntruss.com/recog/v1/stt?lang=Kor', {
+  const r = await pfetch('https://naveropenapi.apigw.ntruss.com/recog/v1/stt?lang=Kor', {
     method: 'POST',
     headers: { 'X-NCP-APIGW-API-KEY-ID': CID, 'X-NCP-APIGW-API-KEY': CSEC, 'Content-Type': 'application/octet-stream' },
     body: audioBuf,
@@ -109,7 +143,7 @@ async function sendSMS(to, content) {
 async function sendAligo(to, content) {
   const form = new URLSearchParams({ key: ALIGO_KEY, user_id: ALIGO_UID, sender: ALIGO_SENDER,
     receiver: to, msg: content, msg_type: content.length > 45 ? 'LMS' : 'SMS', title: '이음이 일자리 안내' });
-  const r = await fetch('https://apis.aligo.in/send/', {
+  const r = await pfetch('https://apis.aligo.in/send/', {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: form.toString() });
   const j = await r.json().catch(() => ({}));
   return { sent: String(j.result_code) === '1', reason: String(j.result_code) === '1' ? '' : ('aligo:' + (j.message || r.status)) };
@@ -119,7 +153,7 @@ async function sendSENS(to, content) {
   const uri = `/sms/v2/services/${SENS_SVC}/messages`;
   const sig = crypto.createHmac('sha256', SENS_SK).update(`POST ${uri}\n${ts}\n${SENS_AK}`).digest('base64');
   const body = JSON.stringify({ type: content.length > 45 ? 'LMS' : 'SMS', from: SMS_FROM, content, messages: [{ to }] });
-  const r = await fetch('https://sens.apigw.ntruss.com' + uri, {
+  const r = await pfetch('https://sens.apigw.ntruss.com' + uri, {
     method: 'POST', headers: { 'Content-Type': 'application/json; charset=utf-8',
       'x-ncp-apigw-timestamp': ts, 'x-ncp-iam-access-key': SENS_AK, 'x-ncp-apigw-signature-v2': sig }, body });
   const j = await r.json().catch(() => ({}));

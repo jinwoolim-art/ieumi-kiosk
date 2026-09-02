@@ -49,6 +49,28 @@
  .ph{color:#94a3b8;font-size:13px}
  .ext{color:#1d4ed8;text-decoration:none}
  footer{text-align:center;color:#94a3b8;font-size:12px;padding:20px}
+
+  /* 서비스 우선순위 */
+  .prow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0 14px}
+  .prow label{font-weight:800;font-size:13px;color:#475569}
+  .prow select,.prow input{font-family:inherit;font-size:14px;padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px}
+  .prow button{font-family:inherit;font-size:13px;font-weight:700;padding:7px 12px;border:none;border-radius:8px;background:#15704f;color:#fff;cursor:pointer}
+  .prow button.bd{background:#fee2e2;color:#b91c1c}
+  .prow .cnt{margin-left:auto;font-weight:800;font-size:13px;color:#15704f}
+  .pcat{border:1px solid #e2e8f0;border-radius:10px;margin-bottom:12px;overflow:hidden}
+  .pcath{display:flex;align-items:center;gap:10px;background:#f1f5f9;padding:9px 12px;font-weight:800;font-size:14px;color:#0f172a}
+  .pcath span{font-weight:700;font-size:12px;color:#64748b}
+  .pcath button{margin-left:auto;font-family:inherit;font-size:12px;font-weight:700;padding:5px 10px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;cursor:pointer}
+  .psvc{display:flex;gap:10px;align-items:flex-start;padding:9px 12px;border-top:1px solid #eef2f6}
+  .psvc.on{background:#f0fdf4}
+  .psvc .pchk input{width:17px;height:17px;margin-top:3px;cursor:pointer}
+  .psvc .pmain{flex:1;min-width:0}
+  .psvc .pmain b{font-size:14px;color:#0f172a}
+  .psvc .pdesc{font-size:12.5px;color:#475569;line-height:1.5;margin-top:2px}
+  .psvc .pkw{font-size:11.5px;color:#94a3b8;margin-top:2px}
+  .psvc .pmv{display:flex;flex-direction:column;gap:3px}
+  .psvc .pmv button{font-size:11px;line-height:1;padding:3px 7px;border:1px solid #cbd5e1;border-radius:5px;background:#fff;cursor:pointer}
+  .psvc .pmv button:disabled{opacity:.3;cursor:default}
 </style>
 </head>
 <body>
@@ -61,6 +83,7 @@
   <div class="nav" id="nav">
     <div class="t on" data-p="members">👥 회원명단 관리</div>
     <div class="t" data-p="policy">🗂️ 서비스·카테고리</div>
+    <div class="t" data-p="prio">⭐ 서비스 우선순위</div>
     <div class="t" data-p="source">📊 일자리 데이터 소스</div>
     <div class="t" data-p="stat">📈 통계</div>
   </div>
@@ -114,6 +137,27 @@
         <li>③ 복지·돌봄 · ④ 생활지원 · ⑤ 여가 · ⑦ 행정 <b style="color:#1d4ed8">🔵 2차</b></li>
         <li>⑧ 안전·피해(긴급) · ⑨ 기타·미분류 <b style="color:#15803d">✅</b></li>
       </ul>
+    </div>
+  </div>
+
+
+  <!-- 서비스 우선순위 (센터별 개별 설정) -->
+  <div class="panel" id="p-prio">
+    <div class="box">
+      <h2><span class="material-symbols-outlined">star</span> 서비스 우선순위 (센터별)</h2>
+      <p class="d">센터마다 따로 설정합니다 — 지역에 따라 필요한 정보가 다르기 때문입니다.
+        카테고리 순서는 <b>① 건강·의료 → ② 복지 혜택·지원금 → ③ 일상생활·교통 → ④ 일자리·경제</b> 입니다.
+        어르신께 먼저 안내할 서비스를 선택하고, ▲▼ 로 순서를 정해 주세요.</p>
+      <div class="prow">
+        <label>센터</label>
+        <select id="ctrSel"></select>
+        <input id="ctrNew" placeholder="새 센터 이름"/>
+        <button id="ctrAdd">센터 추가</button>
+        <button id="ctrDel" class="bd">이 센터 삭제</button>
+        <span class="cnt" id="prioCnt"></span>
+        <button id="prioCopy">결과 복사</button>
+      </div>
+      <div id="prioList"></div>
     </div>
   </div>
 
@@ -264,6 +308,110 @@ $('#jAdd').onclick=()=>{
 document.addEventListener('click',e=>{const b=e.target.closest('[data-jdel]');if(b){jobs.splice(+b.dataset.jdel,1);saveJobs();}});
 
 renderMembers();syncOn();renderStat();renderJobs();
+
+// ===== 서비스 우선순위 (센터별 개별 설정) =====
+const SERVICES = [{"id":"s1","cat":"건강 및 의료","sub":"응급 및 야간/휴일 진료","desc":"주말/공휴일 당번 약국, 야간 인근 병원 및 응급실 위치","kw":"야간 병원, 문 연 약국, 응급실"},{"id":"s2","cat":"건강 및 의료","sub":"치매 및 노인성 질환","desc":"보건소 치매안심센터 무료 조기 검진 / 우울증 상담","kw":"치매 검사, 우울증, 보건소"},{"id":"s3","cat":"건강 및 의료","sub":"홈바른 약복용 안내","desc":"만성질환(혈압, 당뇨) 약의 올바른 복용 시간 및 상식","kw":"약 먹는 시간, 당뇨약, 혈압약"},{"id":"s4","cat":"건강 및 의료","sub":"예방접종 및 건강검진","desc":"독감, 폐렴구균, 대상포진 예방접종 시기 및 대상","kw":"독감 주사, 대상포진, 건강검진"},{"id":"s5","cat":"복지 혜택 및 지원금","sub":"현금성 지원 및 연금","desc":"기초연금, 노령연금 수급 자격 및 신청 기간","kw":"기초연금, 노령연금, 지원금"},{"id":"s6","cat":"복지 혜택 및 지원금","sub":"생활비 감면/할인","desc":"지하철 무임승차카드, 통신비 시니어 할인, 에너지 바우처","kw":"지하철 공짜, 통신비 할인, 전기세"},{"id":"s7","cat":"복지 혜택 및 지원금","sub":"일상 돌봄 및 요양","desc":"노인장기요양등급 신청 / 노인맞춤돌봄서비스","kw":"요양보호사, 돌봄 서비스"},{"id":"s8","cat":"일상 생활 및 교통","sub":"날씨 및 재난/안전","desc":"오늘 날씨와 옷차림, 미세먼지 / 폭염 한파 대피소","kw":"오늘 날씨, 미세먼지, 더위 쉼터"},{"id":"s9","cat":"일상 생활 및 교통","sub":"교통 및 이동 편의","desc":"정류장 실시간 버스 도착 시간 / 복지관 셔틀버스 노선","kw":"버스 언제 와, 셔틀버스 시간표"},{"id":"s10","cat":"일상 생활 및 교통","sub":"교육 및 여가 생활","desc":"복지관 노래교실, 요가, 스마트폰/키오스크 교육","kw":"노래교실, 스마트폰 배우기"},{"id":"s11","cat":"일상 생활 및 교통","sub":"교통약자 동선","desc":"지하철 엘리베이터/에스컬레이터 설치 출구 번호 안내","kw":"엘리베이터 출구, 계단 없는 곳"},{"id":"s12","cat":"일자리 및 경제","sub":"공공일자리(시니어클럽)","desc":"초등학교 교통안전 지킴이, 동네 환경 미화 등","kw":"구청 일자리, 교통안전 일자리"},{"id":"s13","cat":"일자리 및 경제","sub":"시니어 맞춤 민간 일자리","desc":"아파트 경비원, 주차관리원 등 신체 활동 가능 채용 공고","kw":"경비원 구인, 주차관리원"},{"id":"s14","cat":"일자리 및 경제","sub":"디지털 금융 범죄 예방","desc":"보이스피싱, 다단계 사기 등 어르신 타겟 범죄 사례 및 대처법","kw":"보이스피싱, 사기 전화, 스미싱"},{"id":"s15","cat":"복지 혜택 및 지원금","sub":"노인복지서비스","desc":"노년사회교육사업, 지역사회연계사업, 노인사회참여지원사업 등 노인복지서비스 안내","kw":"노인복지서비스, 노인복지관, 복지관, 노인일자리, 노인 수업, 경로식당"},{"id":"s16","cat":"복지 혜택 및 지원금","sub":"노인복지서비스","desc":"노년사회교육사업, 지역사회연계사업, 노인사회참여지원사업 등 노인복지서비스 안내","kw":"노인복지서비스, 노인복지관, 복지관, 노인일자리, 노인 수업, 경로식당"},{"id":"s17","cat":"복지 혜택 및 지원금","sub":"노인복지서비스","desc":"노년사회교육사업, 상담사업 등 노인복지서비스 안내","kw":"노인복지서비스, 노인 수업, 세무상담, 법률상담"},{"id":"s18","cat":"복지 혜택 및 지원금","sub":"노인복지서비스","desc":"노년사회교육사업, 상담사업 등 노인복지서비스 안내","kw":"노인복지서비스, 노인 수업, 세무상담, 법률상담"},{"id":"s19","cat":"복지 혜택 및 지원금","sub":"긴급복지지원","desc":"서초구 저소득 위기가구 대상 긴급 지원. 생계비, 주거비, 의료비, 간병비, 연료비, 교육비 등 지원","kw":"긴급복지, 생계비 지원, 주거비 지원, 의료비 지원, 간병비 지원, 교육비 지원, 서초구 복지"},{"id":"s20","cat":"복지 혜택 및 지원금","sub":"노인복지서비스","desc":"노년사회교육사업, 상담사업 등 노인복지서비스 안내","kw":"노인복지서비스, 노인 수업, 세무상담, 법률상담"},{"id":"s21","cat":"복지 혜택 및 지원금","sub":"노인복지서비스","desc":"노년사회교육사업, 지역사회연계사업, 노인사회참여지원사업 등 노인복지서비스 안내","kw":"노인복지서비스, 노인복지관, 복지관, 노인일자리, 노인 수업, 경로식당"},{"id":"s22","cat":"복지 혜택 및 지원금","sub":"일상 돌봄 및 요양","desc":"독거노인 통합지원, 노인맞춤돌봄서비스 등 취약노인 돌봄 연계","kw":"독거노인 지원, 노인맞춤돌봄, 취약노인"},{"id":"s23","cat":"복지 혜택 및 지원금","sub":"노인복지서비스","desc":"노년사회교육사업, 상담사업 등 노인복지서비스 안내","kw":"노인복지서비스, 노인 수업, 세무상담, 법률상담"},{"id":"s24","cat":"복지 혜택 및 지원금","sub":"1인가구 지원","desc":"1인가구 생활안전, 심리상담, 커뮤니티 프로그램 지원","kw":"1인가구, 독거가구 지원"},{"id":"s25","cat":"복지 혜택 및 지원금","sub":"가족상담 및 교육","desc":"가족상담, 가족교육, 문화프로그램 등 가족지원 서비스 안내","kw":"가족상담, 가족센터, 가족교육"},{"id":"s26","cat":"복지 혜택 및 지원금","sub":"여성 및 가족 지원","desc":"여성·가족 상담, 교육프로그램 및 커뮤니티 공간 운영","kw":"여성가족프라자, 가족상담"},{"id":"s27","cat":"복지 혜택 및 지원금","sub":"노인복지서비스","desc":"노년사회교육사업, 상담사업 등 노인복지서비스 안내","kw":"노인복지서비스, 노인 수업, 세무상담, 법률상담"},{"id":"s28","cat":"복지 혜택 및 지원금","sub":"여성 및 가족 지원","desc":"여성·가족 상담, 교육프로그램 및 커뮤니티 공간 운영","kw":"여성가족프라자, 가족상담"},{"id":"s29","cat":"복지 혜택 및 지원금","sub":"여성 및 가족 지원","desc":"여성·가족 상담, 교육프로그램 및 커뮤니티 공간 운영","kw":"여성가족프라자, 가족상담"},{"id":"s30","cat":"복지 혜택 및 지원금","sub":"노인복지서비스","desc":"노년사회교육사업, 상담사업 등 노인복지서비스 안내","kw":"노인복지서비스, 노인 수업, 세무상담, 법률상담"},{"id":"s31","cat":"복지 혜택 및 지원금","sub":"종합사회복지서비스","desc":"지역사회복지, 상담, 교육 등 종합사회복지서비스 안내","kw":"종합사회복지관, 지역복지"},{"id":"s32","cat":"복지 혜택 및 지원금","sub":"종합사회복지서비스","desc":"지역사회복지, 상담, 교육 등 종합사회복지서비스 안내","kw":"종합사회복지관, 지역복지"},{"id":"s33","cat":"복지 혜택 및 지원금","sub":"종합사회복지서비스","desc":"지역사회복지, 상담, 교육 등 종합사회복지서비스 안내","kw":"종합사회복지관, 지역복지"},{"id":"s34","cat":"복지 혜택 및 지원금","sub":"종합사회복지서비스","desc":"지역사회복지, 상담, 교육 등 종합사회복지서비스 안내","kw":"종합사회복지관, 지역복지"},{"id":"s35","cat":"건강 및 의료","sub":"정신건강 상담 및 위기관리","desc":"우울증, 스트레스, 정신질환 상담 및 위기개입, 자살예방 교육","kw":"우울증 상담, 정신건강 상담, 마음 건강"},{"id":"s36","cat":"건강 및 의료","sub":"보건소 통합 안내","desc":"보건소 각 부서(건강정책과, 건강관리과, 위생과 등) 종합 안내 및 프로그램 신청","kw":"보건소 홈페이지, 보건소 프로그램"},{"id":"s37","cat":"복지 혜택 및 지원금","sub":"위기가구 통합 지원","desc":"위기가구 발굴, 복지 사각지대 상담 및 자원 연계","kw":"위기가구, 복지 사각지대, 돌봄 연계"},{"id":"s38","cat":"복지 혜택 및 지원금","sub":"통합사례관리 및 긴급복지","desc":"복지정책과 희망복지지원단을 통한 통합사례관리 상담 및 긴급복지 신청","kw":"긴급복지 신청, 복지 상담"},{"id":"s39","cat":"복지 혜택 및 지원금","sub":"국민연금 및 기초연금 상담","desc":"국민연금 가입내역 조회, 기초연금 상담 및 신청 안내","kw":"국민연금 상담, 연금공단"},{"id":"s40","cat":"일상 생활 및 교통","sub":"중장년 교육 및 사회공헌활동","desc":"50~64세 중장년 대상 교육, 사회공헌활동, 일자리 연계 프로그램","kw":"50플러스, 중장년 교육"},{"id":"s41","cat":"일상 생활 및 교통","sub":"도서관 문화강좌","desc":"구립도서관 도서 대출, 문화강좌 및 행사 정보","kw":"도서관, 문화강좌"},{"id":"s42","cat":"일상 생활 및 교통","sub":"문화시설 및 여가 프로그램","desc":"구립 공연장 등 문화시설 운영 및 여가 프로그램 안내","kw":"문화재단, 공연 정보"},{"id":"s43","cat":"일자리 및 경제","sub":"구인구직 상담 및 알선","desc":"서초구 소재 기업 채용정보, 구직 등록 및 맞춤형 일자리 알선","kw":"일자리센터, 구인구직"},{"id":"s44","cat":"일자리 및 경제","sub":"고용 지원 및 직업훈련","desc":"실업급여, 직업훈련, 취업지원 프로그램 안내","kw":"실업급여, 직업훈련"},{"id":"s45","cat":"복지 혜택 및 지원금","sub":"장애인 복지서비스","desc":"장애인 및 가족 대상 상담, 직업지원, 교육 등 복지서비스 안내","kw":"장애인 복지, 장애인 가족지원"},{"id":"s46","cat":"복지 혜택 및 지원금","sub":"장애인 복지서비스","desc":"지적장애인 입소시설 보호, 상담, 교육, 직업재활 서비스 안내","kw":"장애인 복지시설, 지적장애인 보호"},{"id":"s47","cat":"복지 혜택 및 지원금","sub":"일상 돌봄 및 요양","desc":"노인 주간보호(데이케어) 서비스 안내","kw":"데이케어센터, 주간보호"},{"id":"s48","cat":"복지 혜택 및 지원금","sub":"금융복지 상담","desc":"과다부채, 채무조정 등 서민금융 및 복지 연계 상담","kw":"빚 상담, 금융복지, 채무조정"},{"id":"s49","cat":"복지 혜택 및 지원금","sub":"장애인 가족지원","desc":"장애인 가족 상담, 돌봄지원 및 휴식 프로그램 안내","kw":"장애인 가족지원, 장애인 상담"},{"id":"s50","cat":"복지 혜택 및 지원금","sub":"식료품 지원(푸드뱅크)","desc":"저소득층 대상 식료품·생필품 무료 지원","kw":"푸드뱅크, 식료품 지원, 무료급식"},{"id":"s51","cat":"복지 혜택 및 지원금","sub":"독거노인 응급안전안심","desc":"독거노인·장애인 가정내 응급호출기, 화재·가스 감지기 모니터링 및 119 자동 연계","kw":"응급벨, 화재 감지기, 독거노인 안심, 119 연결"},{"id":"s52","cat":"복지 혜택 및 지원금","sub":"AI 안부전화 & 스마트플러그","desc":"전력·조도 감지 기반 안부 모니터링, 일정 시간 미동태 발생 시 AI 안부전화 및 현장 출동","kw":"AI 안부전화, 스마트플러그, 서리풀 문안인사, 안부 확인"},{"id":"s53","cat":"일상 생활 및 교통","sub":"교통 및 이동 편의","desc":"서초 공공셔틀버스 실시간 위치안내","kw":"효도버스, 문화버스, AI 특구버스, 버스 위치"},{"id":"s54","cat":"복지 혜택 및 지원금","sub":"서초구 1인가구 안전돌봄","desc":"서리풀 보디가드(도어카메라 설치), 싱글 홈체크(방문형 안전점검 및 차단기·감지기 교체)","kw":"도어카메라, 1인가구 방범, 싱글 홈체크, 서초 1인가구"},{"id":"s55","cat":"복지 혜택 및 지원금","sub":"노인맞춤돌봄서비스","desc":"취약 어르신 대상 생활지원사 정기 방문, 안전확인, 정서지원 및 생활교육 연계","kw":"돌봄 어르신, 생활지원사, 노인 안부, 돌봄서비스 신청"},{"id":"s56","cat":"복지 혜택 및 지원금","sub":"재난·대피 및 안전 알림","desc":"서초구 재난안전대책, 폭염·한파 대피소 및 무더위 쉼터 위치, 기상 특보 및 행동요령","kw":"대피소 위치, 무더위 쉼터, 한파 쉼터, 재난안전"},{"id":"s57","cat":"복지 혜택 및 지원금","sub":"긴급구조 및 소방안전","desc":"서초소방서 119 긴급 신고, 화재 예방 수칙, 위치 기반 응급 구조 요청","kw":"119 신고, 서초소방서, 응급 구조, 불났을 때"},{"id":"s58","cat":"복지 혜택 및 지원금","sub":"복지위기가구 발굴 및 상담","desc":"보건복지상담센터(129), 복지 사각지대 위기가구 제보 및 긴급복지 지원 안내","kw":"복지 상담, 129 전화, 긴급 지원, 위기 가구 신고"},{"id":"s59","cat":"복지 혜택 및 지원금","sub":"민간 긴급구호 및 안부망","desc":"대한적십자사 및 지역 사회복지관 연계 취약계층 구호물품 및 안부 확인 결연","kw":"민간 구호, 적십자 지원, 안부 봉사, 긴급 구호물품"}];
+const CATORDER = ['건강 및 의료','복지 혜택 및 지원금','일상 생활 및 교통','일자리 및 경제'];
+const CATLABEL = {'건강 및 의료':'① 건강 및 의료','복지 혜택 및 지원금':'② 복지 혜택 및 지원금','일상 생활 및 교통':'③ 일상 생활 및 교통','일자리 및 경제':'④ 일자리 및 경제'};
+const SBY = {}; SERVICES.forEach(x => SBY[x.id] = x);
+const CKEY = 'ieumi_centers', PKEY = 'ieumi_priority';
+function pLoad(k, d){ try { const v = JSON.parse(localStorage.getItem(k) || 'null'); return v == null ? d : v; } catch(e) { return d; } }
+function pSaveAll(){ localStorage.setItem(CKEY, JSON.stringify(centers)); localStorage.setItem(PKEY, JSON.stringify(prio)); }
+let centers = pLoad(CKEY, [{id:'c1', name:'서초 어르신 행복이음 센터'}]);
+let prio = pLoad(PKEY, {});
+let curC = centers.length ? centers[0].id : '';
+
+function cfg(id){
+  if (!prio[id]) prio[id] = { on:{}, order: SERVICES.map(x => x.id) };
+  const c = prio[id];
+  const have = new Set(c.order);
+  SERVICES.forEach(x => { if (!have.has(x.id)) c.order.push(x.id); });
+  c.order = c.order.filter(x => SBY[x]);
+  return c;
+}
+function catIds(c, cat){ return c.order.filter(id => SBY[id].cat === cat); }
+
+function renderPrio(){
+  if (!centers.length) { $('#prioList').innerHTML = '<p class="ph">센터를 먼저 추가해 주세요.</p>'; $('#ctrSel').innerHTML=''; $('#prioCnt').textContent=''; return; }
+  if (!centers.find(x => x.id === curC)) curC = centers[0].id;
+  $('#ctrSel').innerHTML = centers.map(c => '<option value="'+esc(c.id)+'"'+(c.id===curC?' selected':'')+'>'+esc(c.name)+'</option>').join('');
+  const c = cfg(curC);
+  let html = '', total = 0;
+  for (const cat of CATORDER){
+    const ids = catIds(c, cat);
+    const on = ids.filter(id => c.on[id]).length; total += on;
+    const all = on === ids.length;
+    html += '<div class="pcat"><div class="pcath">' + esc(CATLABEL[cat]) +
+      ' <span>' + on + '/' + ids.length + ' 선택</span>' +
+      '<button data-all="' + esc(cat) + '|' + (all?'0':'1') + '">' + (all?'전체 해제':'전체 선택') + '</button></div>';
+    ids.forEach((id, i) => {
+      const x = SBY[id];
+      html += '<div class="psvc' + (c.on[id]?' on':'') + '">' +
+        '<label class="pchk"><input type="checkbox" data-on="' + id + '"' + (c.on[id]?' checked':'') + '/></label>' +
+        '<div class="pmain"><b>' + esc(x.sub) + '</b><div class="pdesc">' + esc(x.desc) + '</div>' +
+        '<div class="pkw">🗣 ' + esc(x.kw) + '</div></div>' +
+        '<div class="pmv"><button data-mv="' + id + '|-1"' + (i===0?' disabled':'') + '>▲</button>' +
+        '<button data-mv="' + id + '|1"' + (i===ids.length-1?' disabled':'') + '>▼</button></div></div>';
+    });
+    html += '</div>';
+  }
+  $('#prioList').innerHTML = html;
+  $('#prioCnt').textContent = total + ' / ' + SERVICES.length + ' 선택됨';
+}
+
+function movePrio(id, dir){
+  const c = cfg(curC), cat = SBY[id].cat;
+  const pos = c.order.map((x,i) => ({x,i})).filter(o => SBY[o.x].cat === cat);
+  const at = pos.findIndex(o => o.x === id), to = at + dir;
+  if (to < 0 || to >= pos.length) return;
+  const a = pos[at].i, b = pos[to].i;
+  const t = c.order[a]; c.order[a] = c.order[b]; c.order[b] = t;
+  pSaveAll(); renderPrio();
+}
+
+document.addEventListener('click', e => {
+  const mv = e.target.closest('[data-mv]');
+  if (mv) { const p = mv.dataset.mv.split('|'); movePrio(p[0], +p[1]); return; }
+  const al = e.target.closest('[data-all]');
+  if (al) { const p = al.dataset.all.split('|'), c = cfg(curC);
+    catIds(c, p[0]).forEach(id => { if (p[1] === '1') c.on[id] = true; else delete c.on[id]; });
+    pSaveAll(); renderPrio(); return; }
+});
+document.addEventListener('change', e => {
+  const cb = e.target.closest('[data-on]');
+  if (cb) { const c = cfg(curC); if (cb.checked) c.on[cb.dataset.on] = true; else delete c.on[cb.dataset.on];
+    pSaveAll(); renderPrio(); }
+});
+$('#ctrSel').addEventListener('change', e => { curC = e.target.value; renderPrio(); });
+$('#ctrAdd').onclick = () => {
+  const n = $('#ctrNew').value.trim(); if (!n) { alert('센터 이름을 입력해 주세요.'); return; }
+  const id = 'c' + Date.now();
+  centers.push({ id, name: n }); curC = id; $('#ctrNew').value = '';
+  pSaveAll(); renderPrio();
+};
+$('#ctrDel').onclick = () => {
+  if (!centers.length) return;
+  const c = centers.find(x => x.id === curC);
+  if (!confirm((c ? c.name : '') + ' 센터의 설정을 삭제할까요?')) return;
+  centers = centers.filter(x => x.id !== curC); delete prio[curC];
+  curC = centers.length ? centers[0].id : '';
+  pSaveAll(); renderPrio();
+};
+$('#prioCopy').onclick = () => {
+  const c = cfg(curC), name = (centers.find(x => x.id === curC) || {}).name || '';
+  let out = '[' + name + '] 서비스 우선순위\n';
+  for (const cat of CATORDER){
+    const ids = catIds(c, cat).filter(id => c.on[id]);
+    if (!ids.length) continue;
+    out += '\n' + CATLABEL[cat] + '\n';
+    ids.forEach((id, i) => { out += '  ' + (i+1) + '. ' + SBY[id].sub + '\n'; });
+  }
+  const total = Object.keys(c.on).length;
+  out += '\n선택 ' + total + ' / ' + SERVICES.length + '건';
+  navigator.clipboard.writeText(out).then(() => alert('복사했습니다.\n\n' + out), () => prompt('아래 내용을 복사하세요:', out));
+};
+renderPrio();
+
 </script>
 </body>
 </html>
