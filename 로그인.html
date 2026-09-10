@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>이음이 · 로그인</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet"/>
+<style>
+ *{box-sizing:border-box;margin:0;padding:0}
+ :root{--brand:#15704f;--brand2:#1f9b6c}
+ body{font-family:'Noto Sans KR',sans-serif;color:#14372a;
+      background:linear-gradient(140deg,#0b3d2c,#15704f 55%,#1f9b6c);
+      min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+ .card{background:#fff;border-radius:20px;padding:34px 30px;width:100%;max-width:400px;
+       box-shadow:0 20px 50px rgba(0,0,0,.25)}
+ .brand{display:flex;align-items:center;gap:9px;margin-bottom:22px}
+ .logo{background:var(--brand);color:#fff;border-radius:10px;padding:5px 11px;font-weight:900;font-size:15px}
+ .brand h1{font-size:19px;font-weight:900;color:var(--brand)}
+ label{display:block;font-weight:800;font-size:13px;color:#475569;margin:14px 0 6px}
+ input{width:100%;font-family:inherit;font-size:15px;padding:11px 13px;
+       border:1.5px solid #e2e8f0;border-radius:10px}
+ input:focus{outline:none;border-color:var(--brand2)}
+ button{width:100%;font-family:inherit;font-weight:800;font-size:15px;border:none;border-radius:10px;
+        padding:13px;margin-top:20px;cursor:pointer;background:var(--brand);color:#fff}
+ button:disabled{opacity:.6;cursor:default}
+ .err{background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;border-radius:10px;
+      padding:10px 12px;font-size:13px;font-weight:700;margin-top:14px;display:none}
+ .err.on{display:block}
+ .roles{margin-top:22px;padding-top:18px;border-top:1px solid #e2e8f0;
+        font-size:12px;color:#64748b;line-height:1.8}
+ .roles b{color:#334155}
+ .foot{text-align:center;color:#cbd5e1;font-size:12px;margin-top:18px}
+</style>
+</head>
+<body>
+
+<div>
+  <div class="card">
+    <div class="brand">
+      <span class="logo">이음이</span>
+      <h1>복지관 대시보드 로그인</h1>
+    </div>
+
+    <form id="f">
+      <label for="u">아이디</label>
+      <input id="u" name="username" autocomplete="username" autofocus required/>
+
+      <label for="p">비밀번호</label>
+      <input id="p" name="password" type="password" autocomplete="current-password" required/>
+
+      <button id="btn" type="submit">로그인</button>
+      <div class="err" id="err"></div>
+    </form>
+
+    <div class="roles">
+      <b>마스터</b> — 전체 복지관 운영 · 공통 콘텐츠<br/>
+      <b>복지관 관리자</b> — 우리 복지관 서비스 · 이음이 설정<br/>
+      <b>담당자</b> — 회원명단 · 접수 요청 처리
+    </div>
+  </div>
+  <div class="foot">(주)플레이포 · 이음이</div>
+</div>
+
+<script src="assets/ieumi-api.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const params = new URLSearchParams(location.search);
+
+// Where to land after signing in: an explicit ?next=, else the dashboard that
+// matches the account's role.
+const HOME = {
+  master:       '서초-이음이-관리자-대시보드.html',
+  center_admin: '서초-이음이-관리자-대시보드.html',
+  staff:        '서초-이음이-담당자-대시보드.html',
+};
+function landing(role) {
+  const next = params.get('next');
+  if (next && /^[^/\\:]+\.html/.test(next)) return next;   // same-folder pages only
+  return HOME[role] || HOME.staff;
+}
+
+// Already signed in? Go straight through.
+IeumiAPI.me(true).then(who => { if (who) location.replace(landing(who.user.role)); }).catch(() => {});
+
+$('#f').onsubmit = async (e) => {
+  e.preventDefault();
+  const err = $('#err'), btn = $('#btn');
+  err.classList.remove('on');
+  btn.disabled = true;
+  btn.textContent = '확인 중…';
+  try {
+    const r = await IeumiAPI.post('/api/login', {
+      username: $('#u').value.trim(),
+      password: $('#p').value,
+    });
+    location.href = landing(r.user.role);
+  } catch (ex) {
+    err.textContent = ex.message || '로그인에 실패했습니다.';
+    err.classList.add('on');
+    btn.disabled = false;
+    btn.textContent = '로그인';
+    $('#p').select();
+  }
+};
+</script>
+</body>
+</html>

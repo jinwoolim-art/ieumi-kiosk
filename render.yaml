@@ -1,0 +1,109 @@
+# Render Blueprint — 이음이 (Ieumi)
+#
+# Render reads this file when you create a Blueprint from the repository. It
+# describes two things: the web service, and a nightly job that refreshes the
+# job postings. Secrets are set once in the dashboard, not here.
+#
+# See DEPLOY.md for the full walkthrough.
+
+# Both services need the same secrets, so they are declared once and shared.
+# Render prompts for each value when the Blueprint is first applied.
+envVarGroups:
+  - name: ieumi-secrets
+    envVars:
+      - key: DATABASE_URL          # Postgres (Neon) connection string
+        sync: false
+      - key: ANTHROPIC_API_KEY     # Claude — the conversation
+        sync: false
+      - key: DATAGO_KEY            # data.go.kr — job postings
+        sync: false
+      - key: CLOVA_API_KEY_ID      # NAVER CLOVA — voice
+        sync: false
+      - key: CLOVA_API_KEY
+        sync: false
+      - key: CLOVA_SPEAKER
+        sync: false
+      - key: CLOVA_SPEED
+        sync: false
+
+      # ---- SMS: leave unset until you intend to send real messages ----
+      # With no keys the app shows the "sent" card on screen and sends nothing,
+      # which is what you want for a test. Every real send costs money.
+      - key: ALIGO_API_KEY
+        sync: false
+      - key: ALIGO_USER_ID
+        sync: false
+      - key: ALIGO_SENDER
+        sync: false
+      - key: NCP_SENS_ACCESS_KEY
+        sync: false
+      - key: NCP_SENS_SECRET_KEY
+        sync: false
+      - key: NCP_SENS_SERVICE_ID
+        sync: false
+      - key: SMS_FROM_NUMBER
+        sync: false
+
+services:
+  # ---------------------------------------------------------------- the app
+  - type: web
+    name: ieumi
+    runtime: node
+    plan: starter          # free spins down after 15 min idle (~50s cold start)
+    region: singapore      # the closest Render region to Korea
+    branch: Update-Server  # the branch this work lives on
+
+    # Only production dependencies. PGlite is a devDependency used by the tests
+    # and is a large WASM bundle — there is no reason to ship it.
+    buildCommand: cd ieumi-server && npm ci --omit=dev
+
+    # Applies any migration not yet recorded, before the new version goes live.
+    # Paid plans only; on the free plan run `npm run migrate` yourself once.
+    preDeployCommand: cd ieumi-server && npm run migrate
+
+    startCommand: node ieumi-server/server.js
+
+    healthCheckPath: /health
+
+    envVars:
+      - fromGroup: ieumi-secrets
+      - key: NODE_VERSION
+        value: "22"
+      # The session cookie must be marked Secure. Render terminates TLS and sets
+      # x-forwarded-proto, which the server already honours — this is the belt
+      # to that braces.
+      - key: COOKIE_SECURE
+        value: "on"
+
+  # ------------------------------------------------- nightly job-posting sync
+  # 일자리 공고 자동 갱신.
+  #
+  # Without this the postings freeze on whatever the last manual run fetched,
+  # and within weeks Ieumi is offering jobs that have closed — quietly, with
+  # nothing on screen to say so. The run also prunes long-expired postings.
+  #
+  # Takes roughly ten minutes: the API answers slowly, and each posting's phone
+  # number and address is a second call.
+  - type: cron
+    name: ieumi-job-sync
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: Update-Server
+
+    # 20:00 UTC = 05:00 the next morning in Korea, so a centre opens to fresh
+    # postings and the slow API calls happen while nobody is using the kiosk.
+    schedule: "0 20 * * *"
+
+    buildCommand: cd ieumi-server && npm ci --omit=dev
+    startCommand: cd ieumi-server && npm run sync-jobs
+
+    envVars:
+      - fromGroup: ieumi-secrets
+      - key: NODE_VERSION
+        value: "22"
+      # A background run can afford more of the per-posting detail calls than an
+      # interactive one; each is a few seconds. Raise it to fill in addresses and
+      # phone numbers faster, at the cost of a longer run.
+      - key: JOBS_MAX_DETAIL
+        value: "100"

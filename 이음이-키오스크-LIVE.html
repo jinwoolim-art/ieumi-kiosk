@@ -116,9 +116,38 @@ const bubble=$('#bubble'), statusEl=$('#status'), call=$('#call'), hang=$('#hang
 const API=''; // 같은 오리진(localhost:8791)
 const KO={'0':'공','1':'일','2':'이','3':'삼','4':'사','5':'오','6':'육','7':'칠','8':'팔','9':'구'};
 const digitsKo=p=>[p.slice(0,3),p.slice(3,7),p.slice(7,11)].filter(Boolean).map(s=>s.split('').map(d=>KO[d]||d).join('')).join(', ');
-// 회원명단 (전화번호→이름) — 실제 센터 명단 연동 전, 데모용
-const MEMBERS={ '01012345678':'임진우' };   // ← 데모: 이 번호를 입력하면 '임진우 어르신'으로 인식 (더미 번호)
-const memberName=p=>MEMBERS[(p||'').replace(/\D/g,'')]||'';
+
+// ---- 복지관 식별 (멀티테넌트) ----
+// 키오스크는 로그인하는 사람이 없으므로, 주소의 ?c= 토큰으로 자기 복지관을 알립니다.
+// 관리자 대시보드 → 이음이 설정에서 이 주소를 확인할 수 있습니다.
+// A kiosk has no one to sign in, so it identifies its center with the ?c= token
+// in its URL (PROJECT.md §3-1). The admin dashboard shows the address to use.
+const CTOKEN=new URLSearchParams(location.search).get('c')||'';
+let CTX={ center:null, settings:{}, services:[] };   // 서버에서 받아온 복지관 설정
+
+async function loadContext(){
+  if(!CTOKEN) return;                        // 토큰 없이 열면 기본값으로 동작(시연용)
+  try{
+    const r=await fetch(API+'/api/kiosk/context?c='+encodeURIComponent(CTOKEN));
+    if(r.ok) CTX=await r.json();
+  }catch(e){}
+}
+const centerName=()=>(CTX.center&&CTX.center.name)||'서초 어르신 행복이음';
+const ieumiName =()=>(CTX.settings&&CTX.settings.ieumi_name)||'이음이';
+
+// 회원명단 대조 — 서버의 복지관 명단에 물어봅니다 (브라우저에 명단을 두지 않습니다).
+let memberInfo=null;                          // { found, name } — 번호 확인 시 채워집니다
+const memberName=()=>(memberInfo&&memberInfo.found?memberInfo.name:'');
+async function lookupMember(p){
+  memberInfo=null;
+  if(!CTOKEN||!(CTX.settings&&CTX.settings.roster_check_on)) return;
+  try{
+    const r=await fetch(API+'/api/kiosk/lookup',{method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify({c:CTOKEN, phone:p})});
+    if(r.ok) memberInfo=await r.json();
+  }catch(e){}
+}
 
 // 비디오 시연용 · 서초구 일자리 2건 (비교·선택 시나리오)
 const JOBS=[
@@ -130,6 +159,36 @@ const JOBS=[
    to:'8월 20일까지', place:'서초구 서초동', tel:'경로당 02-586-0000', note:'앉아서도 가능한 가벼운 일, 시간이 더 짧음'},
 ];
 let history=[], active=false, offerSms=false, pickedJob=null, awaitingFollowup=false;
+let lastSummary='', lastCategory='', smsSent=false;
+let lastServiceCode='', lastServiceName='';   // 이음이가 짚어낸 서비스 (§6-P1)
+
+// Claude가 돌려주는 한국어 분류를 담당자 대시보드의 분류로 옮깁니다.
+const CATMAP={'일자리':'job','건강':'health','복지':'welfare','긴급':'urgent','일상':'etc','행정':'etc','기타':'etc'};
+
+// 통화가 끝나면 접수 요청으로 서버에 남깁니다 → 담당자 대시보드에서 처리 (§6-P2).
+async function fileRequest(){
+  if(!CTOKEN || history.length<2) return;
+  const chips=[];
+  if(lastServiceName) chips.push('서비스: '+lastServiceName);
+  if(pickedJob) chips.push('관심: '+pickedJob.job);
+  if(smsSent)   chips.push('문자 발송됨');
+  const body={
+    c:CTOKEN,
+    phone,
+    name:memberName(),
+    category:CATMAP[lastCategory]||'etc',
+    serviceCode:lastServiceCode,
+    summary:lastSummary||(history.find(m=>m.role==='user')||{}).content||'',
+    urgent:lastCategory==='긴급',
+    followup:!smsSent,
+    chips,
+    transcript:history.map(m=>({role:m.role==='user'?'senior':'ieumi', text:m.content})),
+  };
+  try{
+    await fetch(API+'/api/kiosk/requests',{method:'POST',
+      headers:{'content-type':'application/json'}, body:JSON.stringify(body)});
+  }catch(e){}
+}
 
 const setStatus=(t,on=true)=>{statusEl.textContent=t;statusEl.classList.toggle('show',on&&!!t);call.classList.toggle('listening',/듣고|말씀/.test(t));};
 const say=(t)=>{bubble.innerHTML=t;bubble.classList.remove('hide');};
@@ -153,39 +212,191 @@ function armIdle(){ clearTimeout(idleTimer); idleTimer=setTimeout(()=>{
 }, 12000); }
 function listen(){ if(!active) return; if(rec){ try{ setStatus('말씀하세요 🎙️'); rec.start(); armIdle(); }catch(e){} } else { typerow.classList.add('show'); setStatus('아래에 입력해 주세요'); armIdle(); } }
 
-// ---- TTS (클로바) ----
-let audio=new Audio();
-async function speak(text){
-  // 음성으로 읽을 때만 이모지·특수기호 제거 (화면 말풍선엔 그대로 남음)
-  text=(text||'').replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu,'').replace(/\s{2,}/g,' ').trim();
-  return new Promise(async res=>{
-    try{
-      setStatus('이음이가 말하는 중…', true); call.classList.remove('listening');
-      const r=await fetch(API+'/tts',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});
-      const b=await r.blob(); audio.src=URL.createObjectURL(b);
-      audio.onended=()=>res(); audio.onerror=()=>res(); await audio.play();
-    }catch(e){ res(); }
-  });
+// ---- 음성 출력 (스트리밍 파이프라인) ----
+// 어르신이 기다리는 시간을 줄이는 핵심입니다 (§3-6 ①②).
+//
+// 예전에는 답을 끝까지 받아 → 통째로 음성 합성 → 재생이라, 첫 소리까지 8초쯤
+// 걸렸습니다. 이제는 문장이 하나 완성될 때마다 바로 합성을 시작하고, 합성은
+// 여러 개가 동시에 진행되며, 재생만 순서대로 합니다.
+//
+// The old path waited for the whole answer, then synthesised all of it, then
+// played — about eight seconds before any sound. Now each finished sentence is
+// sent for synthesis the moment it exists; requests overlap, playback stays in
+// order. CLOVA costs ~1.8s per call regardless of length, so only the first
+// short sentence is ever waited on.
+let audio = new Audio();
+let speechQueue = [];        // {promise, resolve} — synthesis in flight, played in order
+let draining = false;
+let speechEpoch = 0;         // bumped on hang-up so late audio from a finished call is dropped
+
+function stripForSpeech(t){
+  return (t||'')
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu,'')
+    .replace(/\s{2,}/g,' ')
+    .trim();
 }
 
-// ---- 대화 한 턴 ----
+function ttsBlob(text){
+  return fetch(API+'/tts',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({text, c:CTOKEN})}).then(r=>r.blob());
+}
+
+// 문장 하나를 재생 대기열에 넣습니다. 합성은 지금 바로 시작합니다.
+function enqueueSpeech(text){
+  const clean = stripForSpeech(text);
+  if(!clean) return Promise.resolve();
+  const epoch = speechEpoch;
+  let done;
+  const finished = new Promise(r=>{ done = r; });
+  speechQueue.push({ blob: ttsBlob(clean).catch(()=>null), done, epoch });
+  drainSpeech();
+  return finished;
+}
+
+async function drainSpeech(){
+  if(draining) return;
+  draining = true;
+  while(speechQueue.length){
+    const item = speechQueue.shift();
+    try{
+      const blob = await item.blob;
+      if(blob && item.epoch === speechEpoch){
+        setStatus('이음이가 말하는 중…', true);
+        call.classList.remove('listening');
+        await new Promise(res=>{
+          audio.src = URL.createObjectURL(blob);
+          audio.onended = res; audio.onerror = res;
+          audio.play().catch(()=>res());
+        });
+      }
+    }catch(e){}
+    item.done();
+  }
+  draining = false;
+}
+
+// 통화가 끝나면 아직 재생되지 않은 소리는 버립니다.
+function stopSpeech(){
+  speechEpoch++;
+  speechQueue.forEach(i=>i.done());
+  speechQueue = [];
+  try{ audio.pause(); }catch(e){}
+}
+
+// 한 덩어리를 말하고 끝날 때까지 기다립니다 (인사말·확인 등 단발 발화용).
+const speak = (text) => enqueueSpeech(text);
+
+// 스트리밍으로 들어오는 글을 문장 단위로 잘라 차례차례 합성에 넘깁니다.
+// 문장이 끝나야 자연스러운 억양이 나오므로, 완성된 문장만 보냅니다.
+function makeSentencePump(){
+  let pending = '';
+  return {
+    push(chunk){
+      pending += chunk;
+      let m;
+      // 종결부호까지 포함해 한 문장씩 떼어냅니다.
+      while((m = pending.match(/^[\s\S]*?[.!?…。]["')\]]*\s*/))){
+        const sentence = m[0];
+        pending = pending.slice(sentence.length);
+        enqueueSpeech(sentence);
+      }
+      // 종결부호 없이 너무 길어지면(모델이 문장을 안 끊는 경우) 쉼표에서 끊습니다.
+      if(pending.length > 60){
+        const cut = pending.lastIndexOf(', ');
+        if(cut > 20){ enqueueSpeech(pending.slice(0, cut+1)); pending = pending.slice(cut+1); }
+      }
+    },
+    flush(){
+      const rest = pending.trim();
+      pending = '';
+      if(rest) return enqueueSpeech(rest);
+      return Promise.resolve();
+    },
+  };
+}
+
+// ---- 대화 한 턴 (스트리밍) ----
+// 답이 다 나올 때까지 기다리지 않습니다. 글자가 도착하는 대로 말풍선에 쓰고,
+// 문장이 하나 끝나면 곧바로 음성 합성을 시작합니다 (§3-6 ①②).
 async function botTurn(){
   setStatus('이음이가 생각하는 중…');
+  const pump = makeSentencePump();
+  let reply = '', meta = null, failed = '';
+
   try{
-    const r=await fetch(API+'/chat',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({history, jobs:JOBS})});
-    const d=await r.json();
-    if(d.error){ say('죄송해요, 지금은 대답하기 어려워요.'); setStatus('⚠ '+String(d.error).slice(0,70), true); return; }
-    const p=d.parsed||{}; const reply=p.reply||d.raw||'죄송해요, 다시 한 번 말씀해 주시겠어요?';
-    history.push({role:'assistant',content:reply});
-    offerSms=!!p.offerSms;
-    if(p.pick && JOBS[p.pick-1]) pickedJob=JOBS[p.pick-1];   // 어르신이 고른 자리 기억
-    say(reply);
-    await speak(reply);
-    if(offerSms){ setStatus('문자를 원하시면 "문자 받기"를 눌러도 돼요'); }
-    if(!active) return;
-    listen();
-  }catch(e){ say('연결에 문제가 있어요. 잠시 후 다시 해주세요.'); setStatus(''); }
+    const r = await fetch(API+'/chat',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({history, jobs:JOBS, c:CTOKEN, stream:true})});
+
+    if(!r.ok || !r.body) throw new Error('stream unavailable');
+
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let firstChunk = true;
+
+    for(;;){
+      const {done, value} = await reader.read();
+      if(done) break;
+      buf += dec.decode(value,{stream:true});
+      let nl;
+      while((nl = buf.indexOf('\n')) >= 0){
+        const line = buf.slice(0,nl).trim();
+        buf = buf.slice(nl+1);
+        if(!line) continue;
+        let ev; try{ ev = JSON.parse(line); }catch(e){ continue; }
+
+        if(typeof ev.t === 'string'){
+          if(firstChunk){ firstChunk = false; setStatus(''); }
+          reply += ev.t;
+          say(reply);        // 말풍선은 글자가 오는 대로 자랍니다
+          pump.push(ev.t);   // 문장이 끝나면 그 자리에서 합성 시작
+        }
+        if(ev.done){
+          if(ev.error) failed = ev.error;
+          meta = ev;
+        }
+      }
+    }
+  }catch(e){
+    // 스트리밍이 막힌 환경(프록시 등)에서는 예전 방식으로 한 번 더 시도합니다.
+    try{
+      const r = await fetch(API+'/chat',{method:'POST',headers:{'content-type':'application/json'},
+        body:JSON.stringify({history, jobs:JOBS, c:CTOKEN})});
+      const d = await r.json();
+      if(d.error) throw new Error(d.error);
+      meta = d;
+      reply = (d.parsed && d.parsed.reply) || d.raw || '';
+      say(reply);
+      pump.push(reply);
+    }catch(e2){
+      say('연결에 문제가 있어요. 잠시 후 다시 해주세요.');
+      setStatus('');
+      stopSpeech();
+      return;
+    }
+  }
+
+  if(failed || !reply.trim()){
+    say('죄송해요, 지금은 대답하기 어려워요.');
+    if(failed) setStatus('⚠ '+String(failed).slice(0,70), true);
+    await enqueueSpeech('죄송해요, 지금은 대답하기 어려워요.');
+    if(active) listen();
+    return;
+  }
+
+  const p = (meta && meta.parsed) || {};
+  history.push({role:'assistant',content:reply});
+  offerSms = !!p.offerSms;
+  // 담당자 대시보드로 넘길 요약·분류를 기억해 둡니다.
+  if(p.summary) lastSummary = p.summary;
+  if(meta && meta.serviceCode){ lastServiceCode = meta.serviceCode; lastServiceName = meta.serviceName||''; }
+  if(p.category) lastCategory = p.category;
+  if(p.pick && JOBS[p.pick-1]) pickedJob = JOBS[p.pick-1];   // 어르신이 고른 자리 기억
+
+  await pump.flush();          // 마지막 문장까지 재생이 끝나기를 기다립니다
+  if(offerSms){ setStatus('문자를 원하시면 "문자 받기"를 눌러도 돼요'); }
+  if(!active) return;
+  listen();
 }
 async function onUser(text){
   if(!active) return;
@@ -195,13 +406,13 @@ async function onUser(text){
   // 추가 문자 제안에 대한 응답 처리
   if(awaitingFollowup){
     awaitingFollowup=false;
-    const nm=memberName(phone);
+    const nm=memberName();
     if(/(응|그래|네|예|보내|좋아|해줘|부탁)/.test(text)){
       // 어르신이 찾으시는 것과 비슷한 '다른 일자리'(선택 안 한 나머지) 추천 발송
       const other=JOBS.find(j=>j!==(pickedJob||JOBS[0]))||JOBS[1]||JOBS[0];
-      showSentCard('✅ 다른 일자리도 보냈어요', other, 'send'); setStatus('');
+      smsSent=true; showSentCard('✅ 다른 일자리도 보냈어요', other, 'send'); setStatus('');
       fetch(API+'/sms',{method:'POST',headers:{'content-type':'application/json'},
-        body:JSON.stringify({to:phone, jobs:[other], history})}).catch(()=>{});
+        body:JSON.stringify({to:phone, jobs:[other], history, c:CTOKEN})}).catch(()=>{});
       const m=(nm?nm+' 어르신, ':'')+'어르신께 맞을 만한 다른 일자리도 문자로 보내드렸어요. 도움이 되시길 바라요. 안녕히 가세요!';
       history.push({role:'assistant',content:m}); say(m); setStatus(''); await speak(m);
     }else{
@@ -224,9 +435,10 @@ let phone='';
 const fmtp=p=>{let d=p;if(d.length>3&&d.length<=7)d=d.slice(0,3)+'-'+d.slice(3);else if(d.length>7)d=d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7,11);return d||'​';};
 function renderNum(){ num.textContent=fmtp(phone); }
 function openKeypad(){ phone=''; renderNum(); kpEntry.classList.remove('off'); kpConfirm.classList.add('off'); kpSent.classList.add('off'); kwrap.classList.remove('hidden'); smsBtn.style.display='none'; if(rec)try{rec.stop()}catch(e){} }
-function openConfirm(){
+async function openConfirm(){
   cnum.textContent=fmtp(phone);
-  const nm=memberName(phone);
+  await lookupMember(phone);          // 복지관 명단에 이 번호가 있는지 서버에 확인
+  const nm=memberName();
   if(nm){
     // 회원 명단에서 번호가 매칭됨 → 성함 확인 안내
     ctitle.innerHTML='✅ <b>'+nm+'</b> 어르신, 성함이 확인되었어요<br>이 번호로 보내드릴까요?';
@@ -240,14 +452,14 @@ function openConfirm(){
 // 문자 본문 (server.js /sms 와 동일 포맷 — 화면 미리보기 = 실제 발송 내용)
 function buildSmsText(j, kind){
   if(kind==='followup'){
-    return `[서초 어르신 행복이음] 이음이 추가 안내
+    return `[${centerName()}] ${ieumiName()} 추가 안내
 아까 문의하신 자세한 내용입니다.
 ▸ ${j.gu} · ${j.job}
 ▸ 근무 ${j.work||'담당 기관 문의'}
 ▸ 문의 ${j.tel||'-'}
 정확한 조건은 위 담당 기관에 확인해 주세요. 건강하세요!`;
   }
-  return `[서초 어르신 행복이음] 이음이 안내
+  return `[${centerName()}] ${ieumiName()} 안내
 ▸ ${j.gu} · ${j.job}
 ▸ 급여 ${j.pay}
 ▸ 근무 ${j.work||'-'}
@@ -257,7 +469,7 @@ function buildSmsText(j, kind){
 }
 // 발송 완료 카드 표시 (문자 내용 + 받는 번호)
 function showSentCard(title, job, kind){
-  const nm=memberName(phone);
+  const nm=memberName();
   kpEntry.classList.add('off'); kpConfirm.classList.add('off'); kpSent.classList.remove('off');
   kwrap.classList.remove('hidden');
   sentTitle.textContent=title;
@@ -265,12 +477,12 @@ function showSentCard(title, job, kind){
   smsBody.textContent=buildSmsText(job, kind);
 }
 async function doSend(){
-  const nm=memberName(phone);
+  const nm=memberName();
   const job=pickedJob||JOBS[0];
   // 실발송 시도: .env에 SMS 키가 있으면 실제 문자 발송, 없으면 화면 표시만 (시연)
   fetch(API+'/sms',{method:'POST',headers:{'content-type':'application/json'},
-        body:JSON.stringify({to:phone, jobs:[job], history})}).catch(()=>{});
-  showSentCard('✅ 문자를 보냈어요', job, 'send'); setStatus('');
+        body:JSON.stringify({to:phone, jobs:[job], history, c:CTOKEN})}).catch(()=>{});
+  smsSent=true; showSentCard('✅ 문자를 보냈어요', job, 'send'); setStatus('');
   const done=(nm?nm+' 어르신, ':'')+'말씀하신 번호로 문자를 보내드렸어요.';
   history.push({role:'assistant',content:done}); say(done); offerSms=false;
   await speak(done);
@@ -292,16 +504,28 @@ smsBtn.addEventListener('click',()=>{ if(active) openKeypad(); });
 // ---- 시작/종료 ----
 async function start(){
   active=true; history=[]; offerSms=false; pickedJob=null; awaitingFollowup=false;
+  lastSummary=''; lastCategory=''; smsSent=false; memberInfo=null; phone='';
+  lastServiceCode=''; lastServiceName='';
   call.classList.remove('invite'); hang.classList.add('show'); smsBtn.style.display='none';
-  const greet='안녕하세요, 어르신. 저는 말벗 이음이예요. 무엇을 도와드릴까요?';
+  // 복지관 설정(이름·인사말·목소리)을 먼저 받아옵니다.
+  const greet=(CTX.settings&&CTX.settings.greeting)
+    || ('안녕하세요, 어르신. 저는 말벗 '+ieumiName()+'예요. 무엇을 도와드릴까요?');
   history.push({role:'assistant',content:greet}); say(greet);
   await speak(greet); listen();
 }
-function end(){ active=false; clearIdle(); if(rec)try{rec.stop()}catch(e){} audio.pause();
+function end(){ active=false; clearIdle(); if(rec)try{rec.stop()}catch(e){} stopSpeech();
+  fileRequest();                          // 통화 내용을 담당자 대시보드로 넘깁니다
   call.classList.add('invite'); hang.classList.remove('show'); smsBtn.style.display='none'; typerow.classList.remove('show'); kwrap.classList.add('hidden');
   setStatus(''); say('수화기를 들고<br/>아래 초록 버튼을<br/>눌러주세요.'); }
 call.addEventListener('click',()=>{ if(!active) start(); });
 $('#hangBtn').onclick=end;
+// 통화 중에 창을 닫아도 접수 기록은 남깁니다.
+window.addEventListener('pagehide',()=>{ if(active) fileRequest(); });
+
+// 복지관 설정을 미리 받아 둡니다 (이름·인사말·목소리·명단대조 여부).
+loadContext().then(()=>{
+  if(CTX.center) document.title=ieumiName()+' · '+CTX.center.name;
+});
 </script>
 </body>
 </html>

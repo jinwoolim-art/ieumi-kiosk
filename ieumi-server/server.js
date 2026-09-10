@@ -1,17 +1,18 @@
-// 이음이 백엔드 (무의존성 Node) — STT(클로바) → Claude → TTS(클로바) + 정적 서빙
-// 실행: node ieumi-server/server.js  →  http://localhost:8787/이음이-키오스크-프로토타입.html
+// 이음이 백엔드 — STT(클로바) → Claude → TTS(클로바) + 멀티테넌트 API + 정적 서빙
+// 실행: node ieumi-server/server.js  →  http://localhost:8791/로그인.html
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const https = require('https');
 
-// ---- .env 로드 ----
-const env = {};
-for (const line of fs.readFileSync(path.join(__dirname, '.env'), 'utf8').split('\n')) {
-  const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
-  if (m) env[m[1]] = m[2].replace(/\r$/, '').trim();
-}
+const env = require('./env');
+const db = require('./db');
+const auth = require('./auth');
+const api = require('./api');
+const kioskContext = require('./kiosk-context');
+const jobs = require('./jobs');
+
 const AKEY = env.ANTHROPIC_API_KEY;
 const CID = env.CLOVA_API_KEY_ID, CSEC = env.CLOVA_API_KEY;
 // 문자발송 — 알리고(간편) 또는 네이버 SENS
@@ -21,7 +22,7 @@ const SENS_AK = env.NCP_SENS_ACCESS_KEY, SENS_SK = env.NCP_SENS_SECRET_KEY,
       SENS_SVC = env.NCP_SENS_SERVICE_ID, SMS_FROM = env.SMS_FROM_NUMBER;
 const SENS_READY = !!(SENS_AK && SENS_SK && SENS_SVC && SMS_FROM);
 const SMS_READY = ALIGO_READY || SENS_READY;
-const MODEL = env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+const MODEL = env.CLAUDE_MODEL || 'claude-sonnet-5';   // 최신·저렴·빠름 (§3-6)
 const SPEAKER = env.CLOVA_SPEAKER || 'nara';   // 따뜻한 여성 음성
 const SPEED = env.CLOVA_SPEED || '1';          // 0 기본, 양수=천천히(어르신용)
 const ROOT = path.join(__dirname, '..');
@@ -43,10 +44,20 @@ function proxyFetch(url, opts = {}) {
       if (body) headers['content-length'] = body.length;
       const req = https.request({ socket, servername: u.hostname, host: u.hostname, agent: false,
         path: u.pathname + u.search, method: opts.method || 'GET', headers }, (res) => {
+        const ok = res.statusCode >= 200 && res.statusCode < 300;
+
+        // Streaming callers get the response as it arrives. Buffering it here
+        // would silently turn a streamed reply back into a blocking one for
+        // anyone behind a proxy — the delay §3-6 is about, reintroduced.
+        if (opts.stream) {
+          return resolve({ ok, status: res.statusCode, body: res,
+            text: async () => { let s = ''; for await (const c of res) s += c; return s; } });
+        }
+
         const chunks = [];
         res.on('data', d => chunks.push(d));
         res.on('end', () => { const buf = Buffer.concat(chunks); resolve({
-          ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode,
+          ok, status: res.statusCode,
           json: async () => JSON.parse(buf.toString('utf8')),
           text: async () => buf.toString('utf8'),
           arrayBuffer: async () => buf }); });
@@ -59,24 +70,38 @@ function proxyFetch(url, opts = {}) {
   });
 }
 const pfetch = (url, opts) => PROXY ? proxyFetch(url, opts) : fetch(url, opts);
+// 프롬프트 구성은 prompt.js 로 분리했습니다 (테스트 가능하도록).
+const { DEFAULT_PERSONA, buildSystem, jobsSection, parseModelOutput } = require('./prompt');
 
-const SYSTEM = `당신은 '이음이', 서초 어르신 행복이음 센터의 따뜻한 AI 말벗 도우미입니다.
-규칙:
-- 어르신께 항상 존댓말로, 짧고 쉽고 다정하게. 한 번에 1~2문장.
-- 어려운 단어·영어·긴 설명 금지. 천천히 또박또박한 느낌.
-- 어르신이 일자리를 원하면 목록의 자리를 하나씩 쉽게 소개합니다. 자리가 두 개 이상이면, 어르신이 비교하거나 고민하실 때 급여·근무시간·힘든 정도의 차이를 다정하게 짚어드리고, 재촉하지 말고 편하게 고르시도록 돕습니다.
-- 절대 지어내지 마세요. 목록에 있는 항목만 말합니다. 어르신이 근무시간·자세한 조건 등 목록에 없는 것을 물으면, 모른다고 하지 말고 "그건 문자로 자세히 정리해서 보내드릴게요" 또는 "정확한 건 문자에 있는 담당 기관에 물어보시면 됩니다"라고 안내합니다.
-- 서초구에 맞는 자리가 목록에 없으면 정직하게 "서초에는 지금 열린 자리가 없어서, 가까운 ○○구 자리를 알려드릴게요"라고 말합니다.
-- 안내한 뒤에는 "정리해서 문자로 보내드릴까요?"처럼 문자 발송을 제안합니다.
-- 준비 안 된 요청은 "담당 선생님께 꼭 전해드릴게요"로 받습니다.
-반드시 아래 JSON 하나로만 답하세요(설명·코드블록 없이):
-{"reply":"어르신께 할 말","category":"일자리|건강|복지|행정|기타|긴급","summary":"담당자용 한 줄 요약","offerSms":true|false,"pick":어르신이 관심·선택한 일자리 번호(1부터. 아직 없으면 0)}`;
+// A kiosk identifies its center with a token in its URL; without one the server
+// falls back to the neutral default persona. Cached — see kiosk-context.js.
+const personaFor = (kioskToken) => kioskContext.forToken(kioskToken);
 
-const JLABEL = {gu:'지역',job:'하는 일',org:'기관/회사',pay:'급여',work:'근무시간·형태',age:'연령',to:'접수마감',place:'근무지',tel:'문의',note:'참고(비교용)'};
-const jobsText = (jobs) => (!jobs || !jobs.length) ? '(일자리 목록 없음)'
-  : jobs.map((j, i) => `${i + 1}. ` + Object.entries(j)
-      .filter(([k, v]) => v && k !== 'link' && k !== 'id')
-      .map(([k, v]) => `${JLABEL[k] || k}: ${v}`).join(' / ')).join('\n');
+/**
+ * 이 복지관에 안내할 일자리 — the postings for one centre.
+ *
+ * Synced from data.go.kr into the database (jobs.js): the API has no region
+ * filter and takes tens of seconds per call, so neither could happen while a
+ * senior waits. `fallback` is whatever the page sent, used only when the kiosk
+ * has no centre — the static demo — so that still works with no database.
+ */
+async function jobsForCenter(persona, fallback) {
+  const centerRegion = persona && persona.region;
+  if (centerRegion) {
+    try {
+      const found = await jobs.forCenterRegion(centerRegion);
+      if (found.jobs.length) {
+        return { jobs: found.jobs.map(jobs.toPromptJob), scope: found.scope,
+                 region: found.region, centerRegion };
+      }
+      return { jobs: [], scope: 'none', region: found.region, centerRegion };
+    } catch (e) {
+      console.error('[jobs] lookup failed:', e.message);
+    }
+  }
+  const list = Array.isArray(fallback) ? fallback : [];
+  return { jobs: list, scope: list.length ? 'sigungu' : 'none', region: '', centerRegion: '' };
+}
 
 // Anthropic Messages API: history must begin with a user turn, and same-role
 // turns must not repeat. The kiosk seeds history with Ieumi's spoken greeting and
@@ -94,25 +119,141 @@ function toMessages(history) {
   return out;
 }
 
-async function callClaude(history, jobs, model) {
-  const sys = SYSTEM + '\n\n[일자리 목록]\n' + jobsText(jobs);
+// 생각 끄기 — thinking off (§3-6).
+// Some current models reason before answering unless told not to. For a spoken
+// conversation that is dead air: measured on Sonnet 5, leaving it on pushed the
+// first token from 1.2s to 4.0s. A senior asking where the night clinic is does
+// not need deliberation, so the chat path asks for none.
+//
+// Not every model accepts the parameter, so a rejection falls back to sending
+// the request without it rather than failing the call.
+const THINKING_OFF = { type: 'disabled' };
+
+const chatBody = (history, jobsInfo, model, persona, stream, withThinking = true) => {
   const msgs = toMessages(history);
   if (!msgs.length) throw new Error('no user message yet');
-  const r = await pfetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'x-api-key': AKEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: model || MODEL, max_tokens: 400, system: sys, messages: msgs }),
+  return JSON.stringify({
+    model: model || MODEL,
+    max_tokens: 400,
+    system: buildSystem(persona) + jobsSection(jobsInfo),
+    messages: msgs,
+    ...(withThinking ? { thinking: THINKING_OFF } : {}),
+    ...(stream ? { stream: true } : {}),
   });
-  const j = await r.json();
+};
+const CLAUDE_HEADERS = {
+  'x-api-key': AKEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json',
+};
+const rejectedThinking = (status, detail) =>
+  status === 400 && /thinking/i.test(String(detail || ''));
+
+async function callClaude(history, jobsInfo, model, persona) {
+  let r = await pfetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST', headers: CLAUDE_HEADERS,
+    body: chatBody(history, jobsInfo, model, persona, false),
+  });
+  let j = await r.json();
+  if (j.error && rejectedThinking(r.status, j.error.message)) {
+    r = await pfetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', headers: CLAUDE_HEADERS,
+      body: chatBody(history, jobsInfo, model, persona, false, false),
+    });
+    j = await r.json();
+  }
   if (j.error) throw new Error(j.error.message || 'claude error');
   const text = (j.content && j.content[0] && j.content[0].text) || '';
-  let parsed = null;
-  try { parsed = JSON.parse(text.match(/\{[\s\S]*\}/)[0]); } catch (e) {}
-  return { raw: text, parsed, usage: j.usage };
+  const { reply, meta } = parseModelOutput(text);
+  return { raw: text, parsed: { ...meta, reply }, usage: j.usage };
 }
 
-async function clovaTTS(text) {
-  const body = new URLSearchParams({ speaker: SPEAKER, text, format: 'mp3', speed: SPEED });
+/**
+ * 응답 스트리밍 (§3-6 ①) — stream the reply as it is written.
+ *
+ * `onText` is called with each new piece of what Ieumi will say, so the kiosk
+ * can start synthesising the first sentence while the rest is still being
+ * written. The trailing JSON line is withheld: it is data for the dashboards,
+ * not something to read aloud.
+ *
+ * Returns the same shape as callClaude so both paths stay interchangeable.
+ */
+async function callClaudeStream(history, jobsInfo, model, persona, onText) {
+  // Both transports expose an async-iterable body: WHATWG fetch a ReadableStream,
+  // the proxy tunnel a Node IncomingMessage. The loop below reads either.
+  const open = (withThinking) => pfetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST', headers: CLAUDE_HEADERS, stream: true,
+    body: chatBody(history, jobsInfo, model, persona, true, withThinking),
+  });
+
+  let r = await open(true);
+  if (!r.ok) {
+    const detail = await r.text().catch(() => '');
+    if (!rejectedThinking(r.status, detail)) {
+      throw new Error('claude stream ' + r.status + ' ' + detail.slice(0, 200));
+    }
+    r = await open(false);
+  }
+  if (!r.ok || !r.body) {
+    const detail = await r.text().catch(() => '');
+    throw new Error('claude stream ' + r.status + ' ' + detail.slice(0, 200));
+  }
+
+  let acc = '';        // everything the model has written
+  let sent = 0;        // how much of it we have handed to onText
+  let inMeta = false;  // true once the trailing JSON line has begun
+  let usage = null;
+  let buf = '';
+  const decoder = new TextDecoder();
+
+  const flush = () => {
+    if (inMeta) return;
+    const at = acc.indexOf('\n{');
+    if (at >= 0) {
+      if (at > sent) onText(acc.slice(sent, at));
+      sent = at;
+      inMeta = true;
+      return;
+    }
+    // Hold back a trailing newline: it may be the start of "\n{", and emitting
+    // it would leak the first character of the metadata line into the speech.
+    const safe = acc.endsWith('\n') ? acc.length - 1 : acc.length;
+    if (safe > sent) { onText(acc.slice(sent, safe)); sent = safe; }
+  };
+
+  for await (const chunk of r.body) {
+    buf += decoder.decode(chunk, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      let ev;
+      try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+
+      if (ev.type === 'content_block_delta' && ev.delta && typeof ev.delta.text === 'string') {
+        acc += ev.delta.text;
+        flush();
+      } else if (ev.type === 'message_delta' && ev.usage) {
+        usage = { ...(usage || {}), ...ev.usage };
+      } else if (ev.type === 'message_start' && ev.message && ev.message.usage) {
+        usage = { ...(usage || {}), ...ev.message.usage };
+      } else if (ev.type === 'error') {
+        throw new Error((ev.error && ev.error.message) || 'claude stream error');
+      }
+    }
+  }
+
+  const { reply, meta } = parseModelOutput(acc);
+  // Whatever the parser recovered but streaming did not emit (a model that
+  // ignored the format, say) still has to be spoken.
+  if (reply.length > sent) onText(reply.slice(sent));
+
+  return { raw: acc, parsed: { ...meta, reply }, usage };
+}
+
+async function clovaTTS(text, speaker, speed) {
+  const body = new URLSearchParams({
+    speaker: speaker || SPEAKER, text, format: 'mp3', speed: speed || SPEED,
+  });
   const r = await pfetch('https://naveropenapi.apigw.ntruss.com/tts-premium/v1/tts', {
     method: 'POST',
     headers: { 'X-NCP-APIGW-API-KEY-ID': CID, 'X-NCP-APIGW-API-KEY': CSEC, 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -131,6 +272,28 @@ async function clovaSTT(audioBuf) {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error('STT ' + r.status);
   return j.text || '';
+}
+
+// 문자 본문의 항목들 — only the fields this posting actually has.
+// The job source carries no wage and no shift, so those lines are simply absent
+// rather than printed as "-", which would read like missing data the centre
+// forgot to fill in. A senior gets the phone number and how to apply, which is
+// what they need to act on it.
+function smsLines(j) {
+  return [
+    ['', [j.gu, j.job].filter(Boolean).join(' · ')],
+    ['기관', j.org],
+    ['급여', j.pay],
+    ['근무', j.work],
+    ['대상', j.age],
+    ['접수', j.to],
+    ['접수방법', j.apply],
+    ['근무지', j.place],
+    ['기관 주소', j.orgAddr],
+    ['문의', j.tel],
+  ].filter(([, v]) => v && String(v).trim())
+   .map(([label, v]) => `▸ ${label ? label + ' ' : ''}${v}`)
+   .join('\n');
 }
 
 // ---- 문자발송 ----
@@ -160,9 +323,13 @@ async function sendSENS(to, content) {
   return { sent: r.ok && j.statusCode === '202', reason: r.ok ? '' : ('sens_' + r.status) };
 }
 
+// Doubles as the allow-list for static serving: an extension that is not here
+// is not served at all. Add a type only when a page genuinely loads it.
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css',
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.json': 'application/json',
-  '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webp': 'image/webp' };
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.webp': 'image/webp',
+  '.woff': 'font/woff', '.woff2': 'font/woff2',
+  '.mp3': 'audio/mpeg', '.mp4': 'video/mp4', '.mov': 'video/quicktime' };
 
 function readBody(req) {
   return new Promise((res) => { const b = []; req.on('data', c => b.push(c)); req.on('end', () => res(Buffer.concat(b))); });
@@ -175,14 +342,57 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { cors(res); res.writeHead(204); return res.end(); }
 
   try {
+    // /api/* — multi-tenant REST layer (cookie auth, same-origin only).
+    if (await api.handle(req, res, u)) return;
+
     if (u.pathname === '/chat' && req.method === 'POST') {
-      const { history, jobs, model } = JSON.parse((await readBody(req)).toString() || '{}');
-      const out = await callClaude(history || [], jobs || [], model);
-      return json(res, 200, out);
+      const { history, jobs, model, c, stream } = JSON.parse((await readBody(req)).toString() || '{}');
+      const persona = await personaFor(c || u.searchParams.get('c'));
+      const chosen = model || persona.chat_model;
+
+      // 일자리는 서버가 이 복지관 지역으로 직접 찾습니다 (§6-P2).
+      // The postings come from the database, scoped to the centre's own region —
+      // not from whatever the browser sends. A kiosk opened without a token (the
+      // static demo) still falls back to the list it was given.
+      const jobsInfo = await jobsForCenter(persona, jobs);
+
+      // Claude answers with a 1-based index into the service list we sent it —
+      // an index it cannot get wrong the way it could invent a code. Resolve it
+      // here so the kiosk only ever handles the stable code.
+      const attachService = (out) => {
+        const picked = Number(out.parsed && out.parsed.service);
+        const svc = Number.isInteger(picked) && picked > 0 ? persona.services[picked - 1] : null;
+        if (svc) { out.serviceCode = svc.code; out.serviceName = svc.sub; }
+        return out;
+      };
+
+      if (stream) {
+        cors(res);
+        res.writeHead(200, {
+          'content-type': 'application/x-ndjson; charset=utf-8',
+          'cache-control': 'no-store',
+          'x-accel-buffering': 'no',   // ask intermediaries not to hold the chunks
+        });
+        if (res.socket) res.socket.setNoDelay(true);
+
+        const line = (obj) => res.write(JSON.stringify(obj) + '\n');
+        try {
+          const out = await callClaudeStream(history || [], jobsInfo, chosen, persona,
+            (text) => line({ t: text }));
+          line({ done: true, ...attachService(out) });
+        } catch (e) {
+          line({ done: true, error: String(e.message || e) });
+        }
+        return res.end();
+      }
+
+      return json(res, 200, attachService(
+        await callClaude(history || [], jobsInfo, chosen, persona)));
     }
     if (u.pathname === '/tts' && req.method === 'POST') {
-      const { text } = JSON.parse((await readBody(req)).toString() || '{}');
-      const audio = await clovaTTS(text || '');
+      const { text, c } = JSON.parse((await readBody(req)).toString() || '{}');
+      const persona = await personaFor(c || u.searchParams.get('c'));
+      const audio = await clovaTTS(text || '', persona.voice_speaker, persona.voice_speed);
       cors(res); res.writeHead(200, { 'content-type': 'audio/mpeg' }); return res.end(audio);
     }
     if (u.pathname === '/stt' && req.method === 'POST') {
@@ -190,22 +400,30 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { text });
     }
     if (u.pathname === '/sms' && req.method === 'POST') {
-      const { to, jobs, kind } = JSON.parse((await readBody(req)).toString() || '{}');
+      const { to, jobs, kind, c } = JSON.parse((await readBody(req)).toString() || '{}');
       const j = jobs && jobs[0];
+      // 문자 머리말도 복지관마다 다릅니다 — 어느 복지관이 보낸 문자인지 알 수 있어야 합니다.
+      const persona = await personaFor(c || u.searchParams.get('c'));
+      const head = `[${persona.center_name}] ${persona.ieumi_name}`;
       let content;
       if (kind === 'followup') {
         content = j
-          ? `[서초 어르신 행복이음] 이음이 추가 안내\n아까 문의하신 자세한 내용입니다.\n▸ ${j.gu} · ${j.job}\n▸ 근무 ${j.work || '담당 기관 문의'}\n▸ 문의 ${j.tel || '-'}\n정확한 조건은 위 담당 기관에 확인해 주세요. 건강하세요!`
-          : '[서초 어르신 행복이음] 이음이 추가 안내입니다.';
+          ? `${head} 추가 안내\n아까 문의하신 자세한 내용입니다.\n${smsLines(j)}\n정확한 조건은 위 문의처에 확인해 주세요. 건강하세요!`
+          : `${head} 추가 안내입니다.`;
       } else {
         content = j
-          ? `[서초 어르신 행복이음] 이음이 안내\n▸ ${j.gu} · ${j.job}\n▸ 급여 ${j.pay}\n▸ 근무 ${j.work || '-'}\n▸ 대상 ${j.age || '-'}\n▸ 접수 ${j.to || '-'}\n▸ 문의 ${j.tel || '-'}`
-          : '[서초 어르신 행복이음] 이음이가 안내한 일자리 정보입니다.';
+          ? `${head} 안내\n${smsLines(j)}`
+          : `${head}가 안내한 일자리 정보입니다.`;
       }
       const out = await sendSMS(to || '', content);
       return json(res, 200, out);
     }
-    if (u.pathname === '/health') return json(res, 200, { ok: true, model: MODEL, speaker: SPEAKER, sms: SMS_READY });
+    if (u.pathname === '/health') {
+      return json(res, 200, {
+        ok: true, model: MODEL, speaker: SPEAKER, sms: SMS_READY,
+        db: db.DATABASE_URL ? (await db.ping() ? 'connected' : 'unreachable') : 'not configured',
+      });
+    }
 
     // ---- 정적 파일 ----
     let p = decodeURIComponent(u.pathname);
@@ -214,8 +432,15 @@ const server = http.createServer(async (req, res) => {
     const rel = path.relative(ROOT, fp);
     const seg = rel.split(path.sep);
     // Never serve outside the project, hidden files (.env / .git), or the server source dir.
+    // Never serve outside the project, hidden files (.env / .git), or the server
+    // source directory — and beyond that, serve only the file types the app is
+    // actually made of. An allow-list rather than a block-list: the repository
+    // also holds PROJECT.md (the business and revenue model), deployment config
+    // and SQL, none of which the browser needs and none of which should be one
+    // guessed URL away once this is public.
     const blocked = !rel || rel.startsWith('..') || path.isAbsolute(rel)
-      || seg.some(x => x.startsWith('.')) || seg[0] === 'ieumi-server';
+      || seg.some(x => x.startsWith('.')) || seg[0] === 'ieumi-server'
+      || !MIME[path.extname(fp).toLowerCase()];
     if (blocked || !fs.existsSync(fp) || fs.statSync(fp).isDirectory()) { res.writeHead(404); return res.end('not found'); }
     cors(res); res.writeHead(200, { 'content-type': MIME[path.extname(fp)] || 'application/octet-stream' });
     return fs.createReadStream(fp).pipe(res);
@@ -224,4 +449,40 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => console.log(`이음이 백엔드 실행: http://localhost:${PORT}/이음이-키오스크-프로토타입.html  (model=${MODEL}, voice=${SPEAKER})`));
+server.listen(PORT, async () => {
+  const base = `http://localhost:${PORT}`;
+  console.log(`\n이음이 백엔드 실행  (model=${MODEL}, voice=${SPEAKER})`);
+  console.log(`  로그인       ${base}/로그인.html`);
+  console.log(`  프로토타입    ${base}/이음이-키오스크-프로토타입.html`);
+  if (!db.DATABASE_URL) {
+    console.log(`\n  ⚠ DATABASE_URL 미설정 — 대시보드와 로그인은 동작하지 않습니다.`);
+    console.log(`    (not set — the dashboards and login will not work; see README)`);
+  } else {
+    console.log(`  DB           ${await db.ping() ? '연결됨 connected' : '연결 실패 unreachable'}`);
+  }
+});
+
+// 배포·재시작 시 SIGTERM 을 받습니다 — 처리 중인 요청을 끝내고 DB 연결을 닫습니다.
+// Hosts send SIGTERM on every deploy and scale-down. Without this, in-flight
+// requests are cut off mid-response and pooled connections are dropped rather
+// than returned, which Postgres only cleans up on its own timeout.
+let shuttingDown = false;
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n${signal} — 종료합니다 (finishing in-flight requests)…`);
+
+    server.close(() => {
+      db.pool.end()
+        .catch(() => {})
+        .finally(() => process.exit(0));
+    });
+
+    // A hung request must not keep the process alive past the host's patience.
+    setTimeout(() => {
+      console.log('  강제 종료 (forced after 10s)');
+      process.exit(0);
+    }, 10_000).unref();
+  });
+}

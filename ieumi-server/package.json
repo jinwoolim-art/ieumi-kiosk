@@ -1,0 +1,24 @@
+{
+  "name": "ieumi-server",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Ieumi backend — multi-tenant voice-service SaaS for senior welfare centers",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "migrate": "node db/migrate.js",
+    "seed": "node db/seed.js",
+    "setup": "node db/migrate.js && node db/seed.js",
+    "test": "node test/run.js",
+    "sync-jobs": "node db/sync-jobs.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8"
+  }
+}

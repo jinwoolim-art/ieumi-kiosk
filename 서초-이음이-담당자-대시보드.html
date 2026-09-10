@@ -70,12 +70,30 @@
  .memo{flex:1;min-width:150px;border:1px solid #e2e8f0;border-radius:8px;padding:6px 10px;font-family:inherit;font-size:13px}
  .fu{display:flex;align-items:center;gap:5px;font-size:12px;font-weight:700;color:#b45309;cursor:pointer}
  footer{text-align:center;color:#94a3b8;font-size:12px;padding:20px}
+ header .rt{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+ header .rt a{color:#d9f5ea;font-size:13px;text-decoration:none;font-weight:700}
+ /* 로그인 정보 막대 — sign-in strip (assets/ieumi-api.js renders into it) */
+ .userbar{display:flex;align-items:center;gap:8px;font-size:12.5px;color:#d9f5ea}
+ .userbar .ib-who{font-weight:700}
+ .userbar .ib-center-name{background:rgba(255,255,255,.15);border-radius:999px;padding:3px 10px;font-weight:700}
+ .userbar .ib-center{font-family:inherit;font-size:12.5px;font-weight:700;padding:4px 8px;
+   border-radius:8px;border:none;background:rgba(255,255,255,.92);color:#14372a;max-width:200px}
+ .userbar .ib-out{font-family:inherit;font-weight:800;border:none;cursor:pointer;
+   font-size:12px;padding:5px 11px;border-radius:8px;background:rgba(255,255,255,.18);color:#fff}
+ /* 저장 상태 표시 — save indicator */
+ .saving{position:fixed;right:16px;bottom:16px;background:#14372a;color:#fff;font-size:13px;font-weight:700;
+   padding:9px 15px;border-radius:10px;opacity:0;transition:opacity .18s;pointer-events:none;z-index:50}
+ .saving.on{opacity:.94}
+ .saving.err{background:#b91c1c}
 </style>
 </head>
 <body>
 <header>
-  <div class="lt"><span class="logo">이음이</span><h1>담당자(상담) 대시보드 · 서초 어르신 행복이음 센터</h1></div>
-  <div class="rt">2026-07-05 (토) · 키오스크 실시간 접수</div>
+  <div class="lt"><span class="logo">이음이</span><h1 id="hdTitle">담당자(상담) 대시보드</h1></div>
+  <div class="rt">
+    <a href="서초-이음이-관리자-대시보드.html">관리자(운영) 대시보드 →</a>
+    <div class="userbar" id="ub"></div>
+  </div>
 </header>
 
 <div class="wrap">
@@ -91,123 +109,194 @@
   <footer>(주)플레이포 · 이음이 관리자 대시보드 (프로토타입) · 키오스크 통화 → AI 요약·분류 → 담당자 전달</footer>
 </div>
 
+<script src="assets/ieumi-api.js"></script>
 <script>
-// ===== 회원명단: 운영 대시보드가 저장한 것(localStorage) 우선, 없으면 샘플 =====
-function loadRoster(){
-  try{const a=JSON.parse(localStorage.getItem('ieumi_roster')||'null');
-    if(Array.isArray(a)&&a.length){const m={};a.forEach(x=>m[x.phone]=x.name);return m;}}catch(e){}
-  return {'01012343456':'김순자','01023454567':'박영수','01034565678':'이말순',
-          '01045676789':'최복동','01078901234':'김철수','01099998888':'한복례'};
-}
-const MEMBERS=loadRoster();
+/* ===================================================================
+   담당자(상담) 대시보드 — 서버 API 연동
+   접수 요청은 키오스크가 서버에 기록하고, 담당자는 그것을 처리합니다.
+   Requests are filed by the kiosk and handled here; state is per center and
+   shared across devices (PROJECT.md §6-P0), not browser-local.
+   =================================================================== */
+const esc = IeumiAPI.esc;
+const $ = s => document.querySelector(s);
 
-// ===== 시연 데이터 (키오스크 통화 → AI 요약·분류) =====
-const DATA=[
- {id:'a1',cat:'job',name:'김순자',phone:'01012343456',time:'오늘 10:24',urgent:false,followup:true,
-  summary:'용돈벌이 일자리 문의 → 관악구 아파트 미화원(월급 150만원) 안내·문자 발송',
-  chips:['관심: 관악 미화원','월급 150만원','문자 발송됨'],
-  tr:[['u','일 없어서 용돈이라도 벌까 하는데…'],['b','관악구에 아파트 미화원 일이 있어요. 월급 150만원 정도예요.'],['u','그거 좋네, 문자로 보내줘.'],['b','문자 보내드렸어요.']]},
- {id:'a2',cat:'job',name:'박영수',phone:'01023454567',time:'오늘 10:41',urgent:false,followup:false,
-  summary:'가벼운 일 원함 → 동작구 학교 급식 배식 도우미(시급 10,320원) 안내·문자 발송',
-  chips:['관심: 동작 급식도우미','시급 10,320원','문자 발송됨'],
-  tr:[['u','앉아서 하는 가벼운 일 없나?'],['b','동작구 학교 급식 배식 도우미가 있어요. 시급 만 삼백이십 원이에요.'],['b','문자 보내드렸어요.']]},
- {id:'a3',cat:'health',name:'이말순',phone:'01034565678',time:'오늘 11:02',urgent:false,followup:true,
-  summary:'무릎 통증으로 병원 가고 싶으나 혼자 이동 어려움 → 정형외과 유형 안내 + 교통지원 담당 연결 요청',
-  chips:['건강·의료','교통지원 필요','담당 연결 요청'],
-  tr:[['u','무릎이 아파서 병원엘 가야 하는데 혼자는 못 가.'],['b','무릎이면 정형외과예요. 다만 병원 추천은 어렵고, 담당 선생님께 교통지원을 전해드릴게요.'],['u','그래 부탁해.']]},
- {id:'a4',cat:'urgent',name:'최복동',phone:'01045676789',time:'오늘 11:15',urgent:true,followup:true,
-  summary:'🚨 통화 중 "가슴이 아프다" 발화 → 즉시 119·직원호출 안내함. 긴급 확인 필요',
-  chips:['긴급','119 안내함','즉시 확인'],
-  tr:[['u','가슴이 답답하고 아파…'],['b','어르신, 위급하실 수 있어요. 지금 바로 옆 선생님을 부르거나 119에 연락하세요!']]},
- {id:'a5',cat:'welfare',name:'익명',phone:'',time:'오늘 11:33',urgent:false,followup:true,
-  summary:'독거 어르신, 식사 어려움 → 도시락·재가돌봄 안내, 담당 연결 요청',
-  chips:['복지·돌봄','독거','도시락 문의'],
-  tr:[['u','혼자 사는데 끼니 챙기기가 힘들어.'],['b','도시락과 돌봄 서비스를 담당 선생님께 연결해드릴게요.']]},
- {id:'a6',cat:'etc',name:'정순자',phone:'01067890123',time:'오늘 11:50',urgent:false,followup:true,
-  summary:'⭐ 미준비 서비스 — "목욕 도와주는 데 없냐" 문의 → 접수(담당자 확인). 다음 서비스 후보 데이터',
-  chips:['미분류','목욕지원 요청','서비스 검토'],
-  tr:[['u','목욕하는 거 도와주는 데는 없나?'],['b','그건 제가 잘 몰라서, 담당 선생님께 꼭 전해드릴게요.']]},
- {id:'a7',cat:'job',name:'김철수',phone:'01078901234',time:'오늘 12:07',urgent:false,followup:false,
-  summary:'경비 일 희망 → 강남구 아파트 경비원(월급 219만원) 안내·문자 발송',
-  chips:['관심: 강남 경비원','월급 219만원','문자 발송됨'],
-  tr:[['u','경비 일 같은 거 있나?'],['b','강남구에 아파트 경비원 자리가 있어요. 월급 219만원 정도예요.'],['b','문자 보내드렸어요.']]},
-];
-const CATS={job:['일자리','p-job'],health:['건강·의료','p-health'],welfare:['복지·돌봄','p-welfare'],urgent:['긴급','p-urgent'],etc:['미분류','p-etc']};
-const KEY='ieumi_admin_v1';
-let state=JSON.parse(localStorage.getItem(KEY)||'{}');
-let filter='all';
-let rosterOn=localStorage.getItem('ieumi_roster_on')==='1';   // 운영 대시보드 설정 반영
-const save=()=>localStorage.setItem(KEY,JSON.stringify(state));
-const mask=p=>p?('010-****-'+p.slice(-4)):'';
-function memBadge(d){
-  if(!rosterOn||!d.phone) return '';
-  const nm=MEMBERS[d.phone];
-  return nm?`<span class="badge b-mem">✔ 회원확인 ${nm}</span>`
-           :`<span class="badge b-unreg">⚠ 미등록 번호</span>`;
-}
-const S=id=>state[id]||(state[id]={status:'접수',fu:DATA.find(d=>d.id===id).followup,memo:''});
-DATA.forEach(d=>S(d.id));
+let WHO = null, ROWS = [], filter = 'all', rosterOn = false;
 
-function renderStats(){
-  const done=DATA.filter(d=>state[d.id].status==='완료').length;
-  const fu=DATA.filter(d=>state[d.id].fu&&state[d.id].status!=='완료').length;
-  const urg=DATA.filter(d=>d.urgent&&state[d.id].status!=='완료').length;
-  const sms=DATA.filter(d=>d.chips.some(c=>c.includes('발송'))).length;
-  document.getElementById('stats').innerHTML=`
-   <div class="stat"><div class="n">${DATA.length}</div><div class="l">오늘 접수</div></div>
-   <div class="stat urg"><div class="n">${urg}</div><div class="l">긴급 확인</div></div>
-   <div class="stat"><div class="n">${fu}</div><div class="l">후속연락 필요</div></div>
-   <div class="stat"><div class="n">${sms}</div><div class="l">문자 발송</div></div>
-   <div class="stat"><div class="n">${done}</div><div class="l">처리 완료</div></div>`;
+const CATS = {
+  job:     ['일자리',    'p-job'],
+  health:  ['건강·의료', 'p-health'],
+  welfare: ['복지·돌봄', 'p-welfare'],
+  urgent:  ['긴급',      'p-urgent'],
+  etc:     ['미분류',    'p-etc'],
+};
+const mask = p => (p ? '010-****-' + String(p).slice(-4) : '');
+
+// ---- 저장 알림 (save toast) ----
+const tip = document.createElement('div');
+tip.className = 'saving';
+document.body.appendChild(tip);
+let tipT;
+function toast(msg, isErr) {
+  tip.textContent = msg;
+  tip.classList.toggle('err', !!isErr);
+  tip.classList.add('on');
+  clearTimeout(tipT);
+  tipT = setTimeout(() => tip.classList.remove('on'), isErr ? 4200 : 1400);
 }
-function renderTabs(){
-  const cnt=c=>c==='all'?DATA.length:DATA.filter(d=>d.cat===c).length;
-  const tabs=[['all','전체'],['urgent','긴급'],['job','일자리'],['health','건강·의료'],['welfare','복지·돌봄'],['etc','미분류']];
-  document.getElementById('tabs').innerHTML=tabs.map(([k,l])=>
-   `<div class="tab ${filter===k?'on':''}" data-f="${k}">${l} <b>${cnt(k)}</b></div>`).join('');
+
+// 접수 시각 — 오늘이면 시간만, 아니면 날짜까지
+function when(iso) {
+  const d = new Date(iso), now = new Date();
+  const hm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  const sameDay = d.toDateString() === now.toDateString();
+  return sameDay ? ('오늘 ' + hm) : ((d.getMonth() + 1) + '월 ' + d.getDate() + '일 ' + hm);
 }
-function renderList(){
-  const rows=DATA.filter(d=>filter==='all'||d.cat===filter);
-  document.getElementById('list').innerHTML=rows.map(d=>{
-    const s=state[d.id];const[cl,pc]=CATS[d.cat];
-    const tr=d.tr.map(([w,t])=>`<div class="${w}">${w==='u'?'👵 어르신':'🧑‍🦳 이음이'}: ${t}</div>`).join('');
-    const chips=[...(d.phone?['📱 '+mask(d.phone)]:[]),...d.chips].map(c=>`<span class="chip">${c}</span>`).join('');
-    const stbtn=['접수','처리중','완료'].map(x=>`<button class="${s.status===x?'on':''}" data-st="${d.id}|${x}">${x}</button>`).join('');
-    return `<div class="card c-${d.cat} ${s.status==='완료'?'done-c':''}">
-      <div class="top">
-        <span class="pill ${pc}">${cl}</span>
-        ${d.urgent?'<span class="badge b-urg">🚨 긴급</span>':''}
-        ${s.fu?'<span class="badge b-fu">후속연락</span>':''}
-        ${memBadge(d)}
-        <span class="name">${d.name} 어르신</span>
-        <span class="time">${d.time}</span>
-      </div>
-      <div class="summary">${d.summary}</div>
-      <div class="chips">${chips}</div>
-      <details><summary>💬 대화 원문 보기</summary><div class="tr">${tr}</div></details>
-      <div class="actions">
-        <div class="st">${stbtn}</div>
-        <label class="fu"><input type="checkbox" data-fu="${d.id}" ${s.fu?'checked':''}/> 후속연락</label>
-        <input class="memo" data-memo="${d.id}" placeholder="담당자 메모…" value="${(s.memo||'').replace(/"/g,'&quot;')}"/>
-      </div>
-    </div>`;
-  }).join('')||'<p style="color:#94a3b8;padding:20px;text-align:center">해당 분류의 접수가 없습니다.</p>';
+
+async function load() {
+  ROWS = (await IeumiAPI.get('/api/requests')).requests;
+  renderAll();
 }
-function renderAll(){renderStats();renderTabs();renderList();}
-document.addEventListener('click',e=>{
-  const t=e.target.closest('[data-f]');if(t){filter=t.dataset.f;renderAll();return;}
-  const b=e.target.closest('[data-st]');if(b){const[id,x]=b.dataset.st.split('|');state[id].status=x;save();renderAll();return;}
+
+function renderStats() {
+  const done = ROWS.filter(d => d.status === '완료').length;
+  const fu   = ROWS.filter(d => d.followup && d.status !== '완료').length;
+  const urg  = ROWS.filter(d => d.urgent && d.status !== '완료').length;
+  const sms  = ROWS.filter(d => (d.chips || []).some(c => String(c).includes('발송'))).length;
+  $('#stats').innerHTML =
+    '<div class="stat"><div class="n">' + ROWS.length + '</div><div class="l">전체 접수</div></div>' +
+    '<div class="stat urg"><div class="n">' + urg + '</div><div class="l">긴급 확인</div></div>' +
+    '<div class="stat"><div class="n">' + fu + '</div><div class="l">후속연락 필요</div></div>' +
+    '<div class="stat"><div class="n">' + sms + '</div><div class="l">문자 발송</div></div>' +
+    '<div class="stat"><div class="n">' + done + '</div><div class="l">처리 완료</div></div>';
+}
+
+function renderTabs() {
+  const cnt = c => (c === 'all' ? ROWS.length : ROWS.filter(d => d.category === c).length);
+  const tabs = [['all', '전체'], ['urgent', '긴급'], ['job', '일자리'],
+                ['health', '건강·의료'], ['welfare', '복지·돌봄'], ['etc', '미분류']];
+  $('#tabs').innerHTML = tabs.map(([k, l]) =>
+    '<div class="tab ' + (filter === k ? 'on' : '') + '" data-f="' + k + '">' + l + ' <b>' + cnt(k) + '</b></div>').join('');
+}
+
+// 회원명단 대조 배지 — 관리자 대시보드에서 켠 경우에만 표시합니다.
+function memBadge(d) {
+  if (!rosterOn || !d.caller_phone) return '';
+  return d.member_id
+    ? '<span class="badge b-mem">✔ 회원확인 ' + esc(d.member_name || '') + '</span>'
+    : '<span class="badge b-unreg">⚠ 미등록 번호</span>';
+}
+
+function renderList() {
+  const rows = ROWS.filter(d => filter === 'all' || d.category === filter);
+  $('#list').innerHTML = rows.map(d => {
+    const [cl, pc] = CATS[d.category] || CATS.etc;
+    const tr = (d.transcript || []).map(t =>
+      '<div class="' + (t.role === 'senior' ? 'u' : 'b') + '">' +
+      (t.role === 'senior' ? '👵 어르신' : '🧑‍🦳 이음이') + ': ' + esc(t.text) + '</div>').join('');
+    const chips = (d.caller_phone ? ['📱 ' + mask(d.caller_phone)] : [])
+      .concat(d.service_name ? ['⭐ ' + d.service_name] : [])
+      .concat(d.chips || []).map(c => '<span class="chip">' + esc(c) + '</span>').join('');
+    const stbtn = ['접수', '처리중', '완료'].map(x =>
+      '<button class="' + (d.status === x ? 'on' : '') + '" data-st="' + esc(d.id) + '|' + x + '">' + x + '</button>').join('');
+
+    return '<div class="card c-' + esc(d.category) + (d.status === '완료' ? ' done-c' : '') + '">' +
+      '<div class="top">' +
+        '<span class="pill ' + pc + '">' + cl + '</span>' +
+        (d.urgent ? '<span class="badge b-urg">🚨 긴급</span>' : '') +
+        (d.followup ? '<span class="badge b-fu">후속연락</span>' : '') +
+        memBadge(d) +
+        '<span class="name">' + (esc(d.caller_name) || '익명') + ' 어르신</span>' +
+        '<span class="time">' + when(d.created_at) + '</span>' +
+      '</div>' +
+      '<div class="summary">' + esc(d.summary) + '</div>' +
+      '<div class="chips">' + chips + '</div>' +
+      (tr ? '<details><summary>💬 대화 원문 보기</summary><div class="tr">' + tr + '</div></details>' : '') +
+      '<div class="actions">' +
+        '<div class="st">' + stbtn + '</div>' +
+        '<label class="fu"><input type="checkbox" data-fu="' + esc(d.id) + '"' + (d.followup ? ' checked' : '') + '/> 후속연락</label>' +
+        '<input class="memo" data-memo="' + esc(d.id) + '" placeholder="담당자 메모…" value="' + esc(d.memo || '') + '"/>' +
+      '</div></div>';
+  }).join('') || '<p style="color:#94a3b8;padding:20px;text-align:center">해당 분류의 접수가 없습니다.</p>';
+}
+
+function renderAll() { renderStats(); renderTabs(); renderList(); }
+
+// 서버에 저장 — 실패하면 이전 값으로 되돌립니다.
+async function patch(id, body) {
+  const row = ROWS.find(r => r.id === id);
+  const before = row ? { status: row.status, followup: row.followup, memo: row.memo } : null;
+  Object.assign(row || {}, body);
+  try {
+    await IeumiAPI.patch('/api/requests/' + id, body);
+    toast('저장했습니다.');
+  } catch (e) {
+    if (row && before) Object.assign(row, before);
+    renderAll();
+    toast(e.message || '저장에 실패했습니다.', true);
+  }
+}
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-f]');
+  if (t) { filter = t.dataset.f; renderAll(); return; }
+  const b = e.target.closest('[data-st]');
+  if (b) {
+    const [id, status] = b.dataset.st.split('|');
+    patch(id, { status }).then(renderAll);
+  }
 });
-document.addEventListener('change',e=>{
-  const f=e.target.closest('[data-fu]');if(f){state[f.dataset.fu].fu=f.checked;save();renderStats();}
+document.addEventListener('change', e => {
+  const f = e.target.closest('[data-fu]');
+  if (f) patch(f.dataset.fu, { followup: f.checked }).then(renderStats);
 });
-document.addEventListener('input',e=>{
-  const m=e.target.closest('[data-memo]');if(m){state[m.dataset.memo].memo=m.value;save();}
+
+// 메모는 타이핑이 멈춘 뒤에 저장합니다.
+const memoT = {};
+document.addEventListener('input', e => {
+  const m = e.target.closest('[data-memo]'); if (!m) return;
+  const id = m.dataset.memo, value = m.value;
+  clearTimeout(memoT[id]);
+  memoT[id] = setTimeout(() => patch(id, { memo: value }), 700);
 });
-// 회원명단 대조 상태(운영 대시보드 설정 반영, 읽기전용)
-function syncRoster(){const rs=document.getElementById('rstate');rs.textContent=rosterOn?'활성':'비활성';rs.classList.toggle('on',rosterOn);}
-syncRoster();
-renderAll();
+
+function syncRoster() {
+  const rs = $('#rstate');
+  rs.textContent = rosterOn ? '활성' : '비활성';
+  rs.classList.toggle('on', rosterOn);
+}
+
+async function boot() {
+  WHO = await IeumiAPI.guard(['master', 'center_admin', 'staff']);
+
+  // 마스터는 어느 복지관을 보는지 먼저 정해야 합니다.
+  let centerName = WHO.center ? WHO.center.name : '';
+  if (WHO.user.role === 'master') {
+    const list = (await IeumiAPI.get('/api/centers')).centers;
+    if (list.length) {
+      let cur = IeumiAPI.activeCenter();
+      if (!list.some(c => c.id === cur)) { cur = list[0].id; IeumiAPI.setActiveCenter(cur); }
+      centerName = (list.find(c => c.id === cur) || {}).name || '';
+    }
+  }
+
+  IeumiAPI.renderUserBar($('#ub'), WHO);
+  $('#hdTitle').textContent = '담당자(상담) 대시보드' + (centerName ? ' · ' + centerName : '');
+
+  try {
+    const s = (await IeumiAPI.get('/api/settings')).settings;
+    rosterOn = !!s.roster_check_on;
+  } catch (e) { rosterOn = false; }
+  syncRoster();
+
+  await load();
+}
+
+boot().catch(e => {
+  if (/unauthenticated|forbidden/.test(e.message)) return;
+  console.error(e);
+  toast(e.message || '불러오지 못했습니다.', true);
+});
+
 </script>
 </body>
 </html>
