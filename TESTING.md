@@ -97,10 +97,45 @@ one person needs it, or the client wants to poke at it on their own time.
      line, and why. Tab-separated works, and so does a reversed column order.
    - Type in the **찾기** box to filter a long roster by name or number.
 
-5. **⭐ 서비스 우선순위** — the ~59 services. Note the tags: **공통** are
+5. **⭐ 서비스 우선순위** — the ~60 services. Note the tags: **공통** are
    nationwide services managed by Play4, **우리 복지관** belong to Seocho alone.
    A centre inherits the common set and adds its own. Tick a few and reorder
    them with ▲▼; it saves as you go.
+
+   Each entry now shows **🏢 the organisation that runs it and a link** — this is
+   the client's V03 data — plus a badge saying how it is kept current
+   (**직접입력** manual / **실시간 API** / **스크래핑** scraping). Eleven entries
+   show **⚠ 담당기관·링크 없음** ("no organisation or link") in orange: those are
+   services we added that the client's file does not cover, and Ieumi has nothing
+   to text a senior about them yet.
+
+   **📥 서비스 목록 가져오기 / 업데이트** — this is the answer to the client's
+   *"how does an updated list reach the platform?"*. Paste or upload the JSON file
+   exactly as they send it.
+
+   - Press **미리보기** (preview) first. It reports how many are new, how many
+     change, how many are identical, and how many are skipped — and for each
+     change, **which field and both values**. Nothing is written yet.
+   - Press **반영하기** (apply) to commit. No deploy, no restart.
+   - Press **미리보기** again on the same file: everything reads *변경 없음*
+     ("unchanged"). An import is safe to repeat.
+   - A service **not in the file is left alone** — a partial file is a partial
+     update, never a truncation.
+
+   Signed in as `master` the note at the top reads **전국 공통 목록으로 반영됩니다**
+   ("applies as the nationwide list — every centre inherits it immediately").
+   Sign in as `seocho-admin` and the same box says **서초 … 전용**: a centre can only
+   ever write its own content. That is §3-3 visible before you press anything.
+
+   Two rows in the client's file are **refused**, by design: `s19` and `s43` are
+   already Seocho-private services under different names, and the message names
+   the centre that owns the code. See PROJECT.md §10 — it needs the client's
+   decision, not ours.
+
+   **기관·링크 고치기** on any row edits the organisation and link. As
+   `seocho-admin` on a **공통** service this writes an *override*: Seocho sees the
+   new value, every other centre still sees the original. Clear the field to
+   inherit again.
 
 6. **🎙️ 이음이 설정** — change the assistant's name, voice and speaking tone.
    Save. This page also shows **this centre's kiosk address** — copy it, you
@@ -141,6 +176,21 @@ nobody to log a kiosk in.
     `010-1234-3456`). It recognises the caller by name. Nothing is actually
     sent — SMS keys are deliberately unset — the card on screen shows exactly
     what would go out.
+
+    **Check the card against step 11.** It must describe *the posting Ieumi just
+    talked about*, and it must have **no 급여 (wage) line**. Until this round it
+    could not: the browser resolved the model's choice against a hardcoded demo
+    array, so a senior asking about a real posting was texted a fictional one
+    with `월급 150만원` on it. The card is now the server's own message, echoed
+    back — preview and actual cannot drift apart.
+
+14b. Now try the same thing **without a job**. Press 통화 종료, start a new call,
+    and ask a health question — **"밤에 문 연 약국은 어디서 찾아요?"** ("where do I
+    find a pharmacy open at night?"). Ieumi names **휴일지킴이약국**, the real
+    organisation from the catalogue, and offers a text. Ask for it: the message
+    carries the summary of the answer, the organisation, and its web address.
+    Before this round there was no such message — the code sent the fake cleaning
+    job instead.
 15. Press **통화 종료**, then open the **담당자 대시보드**. The call is at the top
     of the list, summarised, categorised, and tagged with which service it was
     about.

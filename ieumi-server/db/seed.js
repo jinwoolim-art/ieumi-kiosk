@@ -96,10 +96,12 @@ async function seed(db) {
       const centerId = mine ? center.id : null;
 
       await c.query(
-        `INSERT INTO services (code, scope, center_id, category, sub, description, keywords)
-              VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO services (code, scope, center_id, category, sub, description, keywords,
+                               org, link, update_method)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT DO NOTHING`,
-        [s.id, scope, centerId, s.cat, s.sub, s.desc, s.kw],
+        [s.id, scope, centerId, s.cat, s.sub, s.desc, s.kw,
+         s.org || '', s.link || '', s.method || 'manual'],
       );
       mine ? local++ : common++;
 

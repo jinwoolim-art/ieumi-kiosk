@@ -92,7 +92,16 @@ already in `render.yaml`.
 
 Render builds (`npm ci --omit=dev`), runs the migrations, then starts the
 server. The database already has its tables and seed data, so the migration step
-will report that everything is applied and move on.
+will report that everything is applied and move on — except
+`005_service_links.sql`, which adds the organisation and link columns the
+client's service list needs. It is additive (`ADD COLUMN IF NOT EXISTS`) and
+safe on a database already in use.
+
+> **The service data itself is not part of the migration.** Migrations create
+> columns; content arrives through the import screen (PROJECT.md §10). After the
+> first deploy, sign in as `master` → ⭐ 서비스 우선순위 → 📥 서비스 목록 가져오기,
+> upload the client's JSON, press 미리보기, then 반영하기. Expect **48 updated,
+> 2 skipped** — the two skips are the `s19`/`s43` code clash and are correct.
 
 ### 8. The nightly job sync
 
@@ -164,6 +173,15 @@ Three of the four gaps that made the kiosk unsafe to demo are closed:
   refreshed nightly.
 - ~~No streaming.~~ **Fixed.** Time to the first spoken word is about 2.5
   seconds, down from about 7.
+
+A fourth is closed since the client's first test:
+
+- ~~A senior could be texted a job that does not exist.~~ **Fixed.** The model's
+  choice of posting was resolved in the browser against a hardcoded demo array
+  carrying invented wages, so a real question produced a fictional text message.
+  The server resolves it now and reads the posting back from the database; an id
+  it does not know produces no message at all. Texts also work for welfare and
+  health answers now, carrying the organisation and link — see PROJECT.md §6b.
 
 **Three things to say out loud before anyone tries it:**
 

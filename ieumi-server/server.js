@@ -70,8 +70,9 @@ function proxyFetch(url, opts = {}) {
   });
 }
 const pfetch = (url, opts) => PROXY ? proxyFetch(url, opts) : fetch(url, opts);
-// 프롬프트 구성은 prompt.js 로 분리했습니다 (테스트 가능하도록).
+// 프롬프트 구성은 prompt.js 로, 문자 본문은 sms.js 로 분리했습니다 (테스트 가능하도록).
 const { DEFAULT_PERSONA, buildSystem, jobsSection, parseModelOutput } = require('./prompt');
+const { smsContent } = require('./sms');
 
 // A kiosk identifies its center with a token in its URL; without one the server
 // falls back to the neutral default persona. Cached — see kiosk-context.js.
@@ -274,28 +275,6 @@ async function clovaSTT(audioBuf) {
   return j.text || '';
 }
 
-// 문자 본문의 항목들 — only the fields this posting actually has.
-// The job source carries no wage and no shift, so those lines are simply absent
-// rather than printed as "-", which would read like missing data the centre
-// forgot to fill in. A senior gets the phone number and how to apply, which is
-// what they need to act on it.
-function smsLines(j) {
-  return [
-    ['', [j.gu, j.job].filter(Boolean).join(' · ')],
-    ['기관', j.org],
-    ['급여', j.pay],
-    ['근무', j.work],
-    ['대상', j.age],
-    ['접수', j.to],
-    ['접수방법', j.apply],
-    ['근무지', j.place],
-    ['기관 주소', j.orgAddr],
-    ['문의', j.tel],
-  ].filter(([, v]) => v && String(v).trim())
-   .map(([label, v]) => `▸ ${label ? label + ' ' : ''}${v}`)
-   .join('\n');
-}
-
 // ---- 문자발송 ----
 async function sendSMS(to, content) {
   to = (to || '').replace(/\D/g, '');
@@ -366,6 +345,21 @@ const server = http.createServer(async (req, res) => {
         return out;
       };
 
+      // `pick` is the same kind of index, into the job list — and it has to be
+      // resolved in the same place, for the same reason. It used to be resolved
+      // in the browser against a hardcoded demo array, so a senior asking about
+      // a real posting was texted a different, invented one. The list the
+      // prompt was built from is the only list that can answer this.
+      const attachJobs = (out) => {
+        out.jobs = jobsInfo.jobs;
+        const picked = Number(out.parsed && out.parsed.pick);
+        if (Number.isInteger(picked) && picked > 0 && jobsInfo.jobs[picked - 1]) {
+          out.job = jobsInfo.jobs[picked - 1];
+        }
+        return out;
+      };
+      const attach = (out) => attachJobs(attachService(out));
+
       if (stream) {
         cors(res);
         res.writeHead(200, {
@@ -379,14 +373,14 @@ const server = http.createServer(async (req, res) => {
         try {
           const out = await callClaudeStream(history || [], jobsInfo, chosen, persona,
             (text) => line({ t: text }));
-          line({ done: true, ...attachService(out) });
+          line({ done: true, ...attach(out) });
         } catch (e) {
           line({ done: true, error: String(e.message || e) });
         }
         return res.end();
       }
 
-      return json(res, 200, attachService(
+      return json(res, 200, attach(
         await callClaude(history || [], jobsInfo, chosen, persona)));
     }
     if (u.pathname === '/tts' && req.method === 'POST') {
@@ -400,23 +394,14 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { text });
     }
     if (u.pathname === '/sms' && req.method === 'POST') {
-      const { to, jobs, kind, c } = JSON.parse((await readBody(req)).toString() || '{}');
-      const j = jobs && jobs[0];
+      const { to, jobId, serviceCode, summary, kind, c } =
+        JSON.parse((await readBody(req)).toString() || '{}');
       // 문자 머리말도 복지관마다 다릅니다 — 어느 복지관이 보낸 문자인지 알 수 있어야 합니다.
       const persona = await personaFor(c || u.searchParams.get('c'));
-      const head = `[${persona.center_name}] ${persona.ieumi_name}`;
-      let content;
-      if (kind === 'followup') {
-        content = j
-          ? `${head} 추가 안내\n아까 문의하신 자세한 내용입니다.\n${smsLines(j)}\n정확한 조건은 위 문의처에 확인해 주세요. 건강하세요!`
-          : `${head} 추가 안내입니다.`;
-      } else {
-        content = j
-          ? `${head} 안내\n${smsLines(j)}`
-          : `${head}가 안내한 일자리 정보입니다.`;
-      }
+      const content = await smsContent(persona, { jobId, serviceCode, summary, kind });
+      if (!content) return json(res, 200, { sent: false, reason: 'nothing_to_send' });
       const out = await sendSMS(to || '', content);
-      return json(res, 200, out);
+      return json(res, 200, { ...out, content });
     }
     if (u.pathname === '/health') {
       return json(res, 200, {

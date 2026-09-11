@@ -34,6 +34,8 @@ const SQL = `
                  'category', sv.category,
                  'sub', COALESCE(cs.override_sub, sv.sub),
                  'description', COALESCE(cs.override_description, sv.description),
+                 'org', COALESCE(cs.override_org, sv.org),
+                 'link', COALESCE(cs.override_link, sv.link),
                  'keywords', sv.keywords)
                ORDER BY cs.sort_order) AS list
         FROM center_services cs

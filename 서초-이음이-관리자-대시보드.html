@@ -117,6 +117,31 @@
   .psvc .pmv{display:flex;flex-direction:column;gap:3px}
   .psvc .pmv button{font-size:11px;line-height:1;padding:3px 7px;border:1px solid #cbd5e1;border-radius:5px;background:#fff;cursor:pointer}
   .psvc .pmv button:disabled{opacity:.3;cursor:default}
+  /* 담당기관·링크 (클라이언트 V03) */
+  .psvc .porg{font-size:12px;color:#0f766e;margin-top:3px}
+  .psvc .porg a{color:#0f766e}
+  .psvc .porg .none{color:#b45309;font-weight:700}
+  .pm{display:inline-block;font-size:10.5px;font-weight:800;padding:1px 6px;border-radius:999px;margin-left:6px;vertical-align:1px}
+  .pm.manual{background:#ecfdf5;color:#047857}
+  .pm.realtime_api{background:#eff6ff;color:#1d4ed8}
+  .pm.scraping{background:#fef3c7;color:#b45309}
+  .psvc .pedit{font-size:11px;padding:3px 7px;border:1px solid #cbd5e1;border-radius:5px;background:#fff;cursor:pointer;font-family:inherit}
+  /* 카탈로그 가져오기 */
+  .imp{border:1px solid #e2e8f0;border-radius:10px;padding:12px;margin-bottom:14px;background:#fbfdff}
+  .imp h3{font-size:14px;margin-bottom:4px;color:#0f172a}
+  .imp textarea{width:100%;min-height:96px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;
+    border:1px solid #cbd5e1;border-radius:8px;padding:9px;resize:vertical}
+  .imp .row{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
+  .imp button{font-family:inherit;font-size:13px;font-weight:700;padding:7px 12px;border:none;border-radius:8px;cursor:pointer}
+  .imp .prev{background:#e2e8f0;color:#0f172a}
+  .imp .go{background:#15704f;color:#fff}
+  .imp .go:disabled{opacity:.4;cursor:default}
+  .impout{margin-top:10px;font-size:13px;line-height:1.6;display:none}
+  .impout.show{display:block}
+  .impout .tot{font-weight:800;color:#0f172a}
+  .impout ul{margin:6px 0 0 18px}
+  .impout li{font-size:12.5px;color:#475569}
+  .impout .bad{color:#b91c1c}
 </style>
 </head>
 <body>
@@ -224,6 +249,28 @@
         <b style="color:#15803d">공통</b> 표시는 전국 공통 서비스(마스터 관리),
         <b style="color:#b45309">우리 복지관</b> 표시는 이 복지관만의 서비스입니다.
       </p>
+
+      <!-- 서비스 목록 업데이트 (V03 → V04 …) -->
+      <div class="imp" id="impBox">
+        <h3>📥 서비스 목록 가져오기 / 업데이트</h3>
+        <p class="d" id="impWho" style="margin:0"></p>
+        <p class="d" style="margin:4px 0 0">
+          담당기관·링크가 들어 있는 서비스 목록(JSON)을 그대로 붙여넣으세요.
+          <b>code(또는 id)</b>가 같으면 덮어쓰고, 없으면 새로 추가합니다.
+          <b>파일에 없는 서비스는 건드리지 않습니다.</b>
+          먼저 <b>미리보기</b>로 무엇이 바뀌는지 확인한 뒤 반영하세요.
+        </p>
+        <div class="row">
+          <input type="file" id="impFile" accept=".json,application/json"/>
+        </div>
+        <textarea id="impText" placeholder='[{"id":"s1","category":"건강 및 의료","sub":"응급 및 야간/휴일 진료","description":"…","keywords":"…","update_method":"realtime_api","org":"휴일지킴이약국","link":"https://www.pharm114.or.kr/"}]'></textarea>
+        <div class="row">
+          <button class="prev" id="impPreview">미리보기</button>
+          <button class="go" id="impApply" disabled>반영하기</button>
+        </div>
+        <div class="impout" id="impOut"></div>
+      </div>
+
       <div id="prioList"></div>
     </div>
   </div>
@@ -701,11 +748,26 @@ function renderPrio() {
       const tag = s.scope === 'common'
         ? '<span style="font-size:11px;font-weight:800;color:#15803d">공통</span>'
         : '<span style="font-size:11px;font-weight:800;color:#b45309">우리 복지관</span>';
+      // 담당기관·링크 — 이음이가 어르신께 실제로 안내하는 곳입니다 (클라이언트 V03).
+      // 비어 있으면 눈에 띄게 표시합니다: 링크 없는 서비스는 문자로 보낼 것이 없습니다.
+      const method = s.update_method || 'manual';
+      const mlabel = { manual: '직접입력', realtime_api: '실시간 API', scraping: '스크래핑' }[method] || method;
+      const org = (s.org || '').trim(), link = (s.link || '').trim();
+      const orgHtml = (org || link)
+        ? '<div class="porg">🏢 ' + (esc(org) || '기관명 없음') +
+          (link ? ' · <a href="' + esc(link) + '" target="_blank" rel="noopener noreferrer">' + esc(link) + '</a>' : '') +
+          '</div>'
+        : '<div class="porg"><span class="none">⚠ 담당기관·링크 없음 — 문자로 보낼 안내가 없습니다</span></div>';
+
       html += '<div class="psvc' + (s.enabled ? ' on' : '') + '">' +
         '<label class="pchk"><input type="checkbox" data-on="' + esc(s.id) + '"' + (s.enabled ? ' checked' : '') + '/></label>' +
         '<div class="pmain"><b>' + esc(s.sub) + '</b> ' + tag +
+        '<span class="pm ' + esc(method) + '">' + esc(mlabel) + '</span>' +
+        (s.overridden ? '<span class="pm manual">우리 복지관 수정</span>' : '') +
         '<div class="pdesc">' + esc(s.description) + '</div>' +
-        '<div class="pkw">🗣 ' + esc(s.keywords) + '</div></div>' +
+        orgHtml +
+        '<div class="pkw">🗣 ' + esc(s.keywords) +
+        ' <button class="pedit" data-ed="' + esc(s.id) + '">기관·링크 고치기</button></div></div>' +
         '<div class="pmv"><button data-mv="' + esc(s.id) + '|-1"' + (i === 0 ? ' disabled' : '') + '>▲</button>' +
         '<button data-mv="' + esc(s.id) + '|1"' + (i === list.length - 1 ? ' disabled' : '') + '>▼</button></div></div>';
     });
@@ -744,7 +806,101 @@ async function savePriority() {
 }
 $('#prioSave').onclick = savePriority;
 
+// ---------------------------------------------- 기관·링크 고치기
+// 공통 서비스를 고치면 '우리 복지관'에만 적용되는 수정본이 됩니다 (§3-2).
+// 마스터가 고치면 전국 공통 원본이 바뀝니다.
+async function editServiceLink(id) {
+  const s = SERVICES.find(x => x.id === id);
+  if (!s) return;
+  const org = prompt('담당기관 이름\n(비워 두면 공통 값으로 되돌립니다)', s.org || '');
+  if (org === null) return;
+  const link = prompt('인터넷 주소 (http:// 또는 https://)\n(비워 두면 공통 값으로 되돌립니다)', s.link || '');
+  if (link === null) return;
+  try {
+    await IeumiAPI.patch('/api/services/' + id, { org: org.trim(), link: link.trim() });
+    await loadServices();
+    toast('저장했습니다.');
+  } catch (e) { fail(e); }
+}
+
+// ---------------------------------------------- 서비스 목록 가져오기
+// 클라이언트가 보내 준 목록 파일을 그대로 붙여넣으면 반영됩니다 — 배포 없이.
+const impOut = $('#impOut'), impApply = $('#impApply');
+let impParsed = null;
+
+$('#impFile').onchange = async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  $('#impText').value = await f.text();
+  impApply.disabled = true;
+  impOut.classList.remove('show');
+};
+$('#impText').addEventListener('input', () => {
+  impApply.disabled = true;
+  impOut.classList.remove('show');
+});
+
+function readImportText() {
+  const raw = $('#impText').value.trim();
+  if (!raw) throw new Error('붙여넣은 내용이 없습니다.');
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch { throw new Error('JSON 형식이 아닙니다. 파일 내용을 그대로 붙여넣어 주세요.'); }
+  const items = Array.isArray(parsed) ? parsed : parsed.items;
+  if (!Array.isArray(items)) throw new Error('목록(배열)이 아닙니다.');
+  return items;
+}
+
+function renderImport(r) {
+  const line = (n, label, cls) => n ? '<span class="' + (cls || '') + '">' + label + ' <b>' + n + '</b>건</span>' : '';
+  let html = '<div class="tot">' +
+    [line(r.created, '새로 추가'), line(r.updated, '수정'), line(r.unchanged, '변경 없음'),
+     line(r.skipped, '건너뜀', 'bad')].filter(Boolean).join(' · ') +
+    (r.dry_run ? ' <i>(미리보기 — 아직 반영되지 않았습니다)</i>' : ' <b>반영 완료</b>') + '</div>';
+
+  if (r.detail.updated.length) {
+    html += '<ul>' + r.detail.updated.slice(0, 20).map(u =>
+      '<li><b>' + esc(u.code) + '</b> — ' + u.changes.map(c =>
+        esc(c.field) + ': ' + esc(String(c.from || '(없음)')) + ' → ' + esc(String(c.to))).join(', ') +
+      '</li>').join('') +
+      (r.detail.updated.length > 20 ? '<li>… 외 ' + (r.detail.updated.length - 20) + '건</li>' : '') + '</ul>';
+  }
+  if (r.detail.created.length) {
+    html += '<ul><li>새 서비스: <b>' + r.detail.created.map(esc).join(', ') + '</b>' +
+      ' — 추가된 뒤에는 <b>꺼진 상태</b>입니다. 위 목록에서 켜 주세요.</li></ul>';
+  }
+  if (r.detail.skipped.length) {
+    html += '<ul>' + r.detail.skipped.map(s =>
+      '<li class="bad">' + s.at + '번째' + (s.code ? ' (' + esc(s.code) + ')' : '') + ' — ' + esc(s.reason) + '</li>'
+    ).join('') + '</ul>';
+  }
+  impOut.innerHTML = html;
+  impOut.classList.add('show');
+}
+
+$('#impPreview').onclick = async () => {
+  try {
+    impParsed = readImportText();
+    const r = await IeumiAPI.post('/api/services/import', { dry_run: true, items: impParsed });
+    renderImport(r);
+    impApply.disabled = !(r.created || r.updated);
+  } catch (e) { impApply.disabled = true; fail(e); }
+};
+
+$('#impApply').onclick = async () => {
+  if (!impParsed) return;
+  impApply.disabled = true;
+  try {
+    const r = await IeumiAPI.post('/api/services/import', { items: impParsed });
+    renderImport(r);
+    await loadServices();
+    toast('서비스 목록을 반영했습니다.');
+  } catch (e) { fail(e); }
+};
+
 document.addEventListener('click', e => {
+  const ed = e.target.closest('[data-ed]');
+  if (ed) { editServiceLink(ed.dataset.ed); return; }
   const mv = e.target.closest('[data-mv]');
   if (mv) { const p = mv.dataset.mv.split('|'); movePrio(p[0], +p[1]); return; }
   const al = e.target.closest('[data-all]');
@@ -1010,6 +1166,17 @@ async function boot() {
   IeumiAPI.renderUserBar($('#ub'), WHO);
   $('#hdTitle').textContent = '관리자(운영) 대시보드' + (centerName ? ' · ' + centerName : '');
   const pc = $('#prioCenter'); if (pc) pc.textContent = centerName ? ('복지관: ' + centerName) : '';
+
+  // 가져오기가 '어디에' 반영되는지는 권한에 따라 다릅니다 (§3-2, §3-3) — 누르기 전에
+  // 알 수 있어야 합니다. 마스터가 올리면 전국 모든 복지관에 내려가고, 복지관 관리자가
+  // 올리면 이 복지관에만 들어갑니다.
+  const iw = $('#impWho');
+  if (iw) {
+    iw.innerHTML = isMaster
+      ? '<b style="color:#15803d">전국 공통 목록</b>으로 반영됩니다 — 모든 복지관이 곧바로 물려받습니다.'
+      : '<b style="color:#b45309">' + esc(centerName || '우리 복지관') + ' 전용</b>으로 반영됩니다. ' +
+        '전국 공통 서비스는 마스터만 바꿀 수 있습니다.';
+  }
 
   $$('[data-master]').forEach(el => { if (isMaster) el.hidden = false; else el.remove(); });
 

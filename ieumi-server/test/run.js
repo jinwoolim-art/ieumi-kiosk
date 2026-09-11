@@ -119,7 +119,7 @@ test('seed creates the tenant, the 3 roles and the split catalog', async () => {
 
   const common = await shim.one(`SELECT count(*)::int n FROM services WHERE scope = 'common'`);
   const local  = await shim.one(`SELECT count(*)::int n FROM services WHERE scope = 'center'`);
-  assert.strictEqual(common.n + local.n, 59, 'all 59 services should be seeded');
+  assert.strictEqual(common.n + local.n, 60, 'all 60 services should be seeded');
   assert.strictEqual(local.n, 7, 'the 7 Seocho-specific services should be center-scoped');
 
   const members = await shim.one('SELECT count(*)::int n FROM members');
@@ -130,7 +130,7 @@ test('seed creates the tenant, the 3 roles and the split catalog', async () => {
   // Re-running must not duplicate anything.
   await seed(shim);
   const after = await shim.one(`SELECT count(*)::int n FROM services`);
-  assert.strictEqual(after.n, 59, 'seed should be idempotent');
+  assert.strictEqual(after.n, 60, 'seed should be idempotent');
 });
 
 // Needs a center to exist, so it runs after the seed.
@@ -223,13 +223,13 @@ test('master can create a second center, which inherits the common catalog', asy
 
   const inherited = await shim.one(
     'SELECT count(*)::int n FROM center_services WHERE center_id = $1', [centerB.id]);
-  assert.strictEqual(inherited.n, 52, 'the new center inherits the 52 common services');
+  assert.strictEqual(inherited.n, 53, 'the new center inherits the 53 common services');
 
   // …and must NOT see Seocho's own 7.
   const visible = await shim.one(
     `SELECT count(*)::int n FROM services s
       WHERE s.active AND (s.scope = 'common' OR s.center_id = $1)`, [centerB.id]);
-  assert.strictEqual(visible.n, 52, "a center must not see another center's own services");
+  assert.strictEqual(visible.n, 53, "a center must not see another center's own services");
 });
 
 test('a center admin cannot create a center', async () => {
@@ -341,9 +341,9 @@ test('changing a password invalidates that user\'s sessions', async () => {
 test('priority: enabling and ordering services persists, scoped to the center', async () => {
   const list = await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie });
   assert.strictEqual(list.statusCode, 200);
-  assert.strictEqual(list.body.services.length, 59, 'Seocho sees 52 common + its own 7');
+  assert.strictEqual(list.body.services.length, 60, 'Seocho sees 53 common + its own 7');
 
-  const items = list.body.services.map((s, i) => ({ id: s.id, enabled: i < 3, sort_order: 58 - i }));
+  const items = list.body.services.map((s, i) => ({ id: s.id, enabled: i < 3, sort_order: 59 - i }));
   const save = await call({ method: 'PUT', url: '/api/services/priority', cookie: S.admin.cookie, body: { items } });
   assert.strictEqual(save.statusCode, 200);
 
@@ -868,6 +868,251 @@ test('stats are per center', async () => {
   assert.strictEqual(b.body.stats.members, 1);
   assert.strictEqual(a.body.stats.enabled_services, 3);
   assert.strictEqual(b.body.stats.enabled_services, 0);
+});
+
+// ================================================================ catalogue import (§3-2)
+// How a new revision of the client's service list reaches a running platform.
+// The file format is theirs, unchanged — {id, category, sub, description,
+// keywords, update_method, org, link} — because asking them to reshape it is
+// how an update stops happening.
+const V03 = (over = {}) => ({
+  id: 's1', category: '건강 및 의료', sub: '응급 및 야간/휴일 진료',
+  description: '주말/공휴일 당번 약국, 야간 인근 병원 및 응급실 위치',
+  keywords: '야간 병원, 문 연 약국, 응급실',
+  update_method: 'realtime_api', org: '휴일지킴이약국', link: 'https://www.pharm114.or.kr/',
+  ...over,
+});
+
+test('the seed carries the client V03 organisation and link', async () => {
+  const res = await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie });
+  const s1 = res.body.services.find((s) => s.code === 's1');
+  assert.strictEqual(s1.org, '휴일지킴이약국');
+  assert.strictEqual(s1.link, 'https://www.pharm114.or.kr/');
+  assert.strictEqual(s1.update_method, 'realtime_api');
+});
+
+test('import: a dry run reports the change and writes nothing', async () => {
+  const body = { dry_run: true, items: [V03({ org: '바뀐 기관' })] };
+  const res = await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie, body });
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(res.body.updated, 1);
+  assert.strictEqual(res.body.created, 0);
+  assert.deepStrictEqual(res.body.detail.updated[0].changes,
+    [{ field: 'org', from: '휴일지킴이약국', to: '바뀐 기관' }]);
+
+  const after = await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie });
+  assert.strictEqual(after.body.services.find((s) => s.code === 's1').org, '휴일지킴이약국',
+    'a dry run must not write');
+});
+
+test('import: re-importing an unchanged row changes nothing', async () => {
+  const res = await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
+    body: { items: [V03()] } });
+  assert.strictEqual(res.body.unchanged, 1);
+  assert.strictEqual(res.body.updated, 0);
+});
+
+test('import: an updated link reaches every centre, and the kiosk sees it', async () => {
+  const res = await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
+    body: { items: [V03({ link: 'https://www.pharm114.or.kr/main' })] } });
+  assert.strictEqual(res.body.updated, 1);
+
+  const a = await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie });
+  assert.strictEqual(a.body.services.find((s) => s.code === 's1').link, 'https://www.pharm114.or.kr/main');
+  const b = await call({ method: 'GET', url: '/api/services?center=' + centerB.id, cookie: S.master.cookie });
+  assert.strictEqual(b.body.services.find((s) => s.code === 's1').link, 'https://www.pharm114.or.kr/main',
+    'nationwide content is inherited, so the fix reaches every centre at once');
+});
+
+test('import: a field the file omits is left alone', async () => {
+  await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
+    body: { items: [{ id: 's1', org: '휴일지킴이약국(수정)' }] } });
+  const res = await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie });
+  const s1 = res.body.services.find((s) => s.code === 's1');
+  assert.strictEqual(s1.org, '휴일지킴이약국(수정)');
+  assert.strictEqual(s1.sub, '응급 및 야간/휴일 진료', 'an omitted column must not be blanked');
+  assert.strictEqual(s1.update_method, 'realtime_api');
+});
+
+test('import: a new service appears in every centre, switched off', async () => {
+  const res = await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
+    body: { items: [V03({ id: 's900', sub: '새 서비스', org: '새 기관', update_method: 'manual' })] } });
+  assert.strictEqual(res.body.created, 1);
+
+  for (const [label, q, cookie] of [['seocho', '', S.admin.cookie],
+                                    ['centerB', '?center=' + centerB.id, S.master.cookie]]) {
+    const list = (await call({ method: 'GET', url: '/api/services' + q, cookie })).body.services;
+    const made = list.find((s) => s.code === 's900');
+    assert.ok(made, `${label} inherits the new service`);
+    assert.strictEqual(made.enabled, false, `${label} decides for itself whether to offer it`);
+  }
+});
+
+test('import: bad rows are refused individually and reported', async () => {
+  const res = await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
+    body: { dry_run: true, items: [
+      V03({ id: 's1' }),
+      V03({ id: 's2', link: 'javascript:alert(1)' }),
+      V03({ id: '' }),
+      V03({ id: 's3', update_method: 'telepathy' }),
+      V03({ id: 's1' }),
+    ] } });
+  assert.strictEqual(res.body.skipped, 4);
+  const why = res.body.detail.skipped.map((s) => s.reason).join(' | ');
+  assert.ok(/http/.test(why), 'a non-http link is named as the reason');
+  assert.ok(/code\(id\)가 없습니다/.test(why), 'a row with no code is named');
+  assert.ok(/update_method/.test(why), 'an unknown update_method is named');
+  assert.ok(/중복/.test(why), 'a code repeated inside the file is reported');
+});
+
+test('import: a code already used by one centre cannot become nationwide', async () => {
+  // The seed files anything mentioning 서초 as that centre's own, so some codes in
+  // the client's list are already centre-scoped here. A centre's list is
+  // "everything common plus everything of mine", so letting the same code exist
+  // in both scopes shows two rows with one name and hands the kiosk an ambiguous
+  // service_code. Measured against the real data: s19 and s43 collide this way.
+  const mine = await shim.one(`SELECT code FROM services WHERE scope = 'center' LIMIT 1`);
+  const res = await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
+    body: { dry_run: true, items: [V03({ id: mine.code })] } });
+
+  assert.strictEqual(res.body.skipped, 1);
+  assert.strictEqual(res.body.created, 0);
+  assert.ok(/전용 서비스로 등록/.test(res.body.detail.skipped[0].reason),
+    'the reason names the centre that already owns the code');
+});
+
+test('import: a clashing row is skipped but the rest of the file still applies', async () => {
+  const mine = await shim.one(`SELECT code FROM services WHERE scope = 'center' LIMIT 1`);
+  const res = await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
+    body: { items: [V03({ id: mine.code }), V03({ id: 's901', sub: '멀쩡한 항목', org: '기관' })] } });
+  assert.strictEqual(res.body.skipped, 1);
+  assert.strictEqual(res.body.created, 1, 'one bad row must not cost the other 49');
+
+  const list = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie })).body.services;
+  assert.ok(list.find((s) => s.code === 's901'));
+  assert.strictEqual(list.filter((s) => s.code === mine.code).length, 1, 'still exactly one row for that code');
+});
+
+test('TENANT BOUNDARY — a centre admin cannot rewrite nationwide content', async () => {
+  const res = await call({ method: 'POST', url: '/api/services/import', cookie: S.admin.cookie,
+    body: { scope: 'common', items: [V03({ org: '무단 수정' })] } });
+  assert.strictEqual(res.body.scope, 'center',
+    'a centre importing can only ever write its own content');
+
+  const master = await call({ method: 'GET', url: '/api/services?center=' + centerB.id,
+    cookie: S.master.cookie });
+  assert.notStrictEqual(master.body.services.find((s) => s.code === 's1').org, '무단 수정',
+    "another centre's view of nationwide content is untouched");
+});
+
+test('staff cannot import or edit the catalogue', async () => {
+  const imp = await call({ method: 'POST', url: '/api/services/import', cookie: S.staff.cookie,
+    body: { items: [V03()] } });
+  assert.strictEqual(imp.statusCode, 403);
+});
+
+test('a centre edits inherited content as an override, not at the source', async () => {
+  const list = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie })).body.services;
+  const common = list.find((s) => s.scope === 'common' && s.code === 's5');
+
+  const res = await call({ method: 'PATCH', url: '/api/services/' + common.id, cookie: S.admin.cookie,
+    body: { org: '우리 동네 주민센터' } });
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(res.body.overridden, true);
+
+  const mine = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie }))
+    .body.services.find((s) => s.code === 's5');
+  assert.strictEqual(mine.org, '우리 동네 주민센터');
+  assert.strictEqual(mine.base_org, '복지로', 'the nationwide value is still there underneath');
+
+  const other = (await call({ method: 'GET', url: '/api/services?center=' + centerB.id,
+    cookie: S.master.cookie })).body.services.find((s) => s.code === 's5');
+  assert.strictEqual(other.org, '복지로', "one centre's override never leaks into another");
+});
+
+test('clearing an override falls back to the inherited value', async () => {
+  const list = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie })).body.services;
+  const s5 = list.find((s) => s.code === 's5');
+  await call({ method: 'PATCH', url: '/api/services/' + s5.id, cookie: S.admin.cookie, body: { org: '' } });
+
+  const back = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie }))
+    .body.services.find((s) => s.code === 's5');
+  assert.strictEqual(back.org, '복지로');
+});
+
+test('the kiosk prompt carries the organisation behind each service', async () => {
+  const sys = buildSystem({
+    ieumi_name: '이음이', center_name: '서초', tone: 'warm',
+    services: [{ code: 's1', category: '건강 및 의료', sub: '야간 진료',
+                 description: '문 연 약국', org: '휴일지킴이약국', link: 'https://www.pharm114.or.kr/' }],
+  });
+  assert.ok(sys.includes('담당기관: 휴일지킴이약국'), 'Ieumi can name a real organisation');
+  assert.ok(!sys.includes('pharm114'), 'a URL is never read aloud — it goes by SMS instead');
+});
+
+// ================================================================ 문자 (SMS)
+// What a senior actually receives. The kiosk sends identifiers only; everything
+// in the body is read back from a record here.
+const { smsContent } = require('../sms');
+
+const PERSONA = {
+  center_name: '서초 어르신 행복이음 센터', ieumi_name: '이음이',
+  services: [{ code: 's1', sub: '응급 및 야간/휴일 진료',
+               org: '휴일지킴이약국', link: 'https://www.pharm114.or.kr/' }],
+};
+// A stand-in for the jobs table, so this never needs the data.go.kr sync to have run.
+const JOBSTUB = {
+  byId: async (id) => (id === 'real-1'
+    ? { id: 'real-1', title: '경로당 급식 도우미', org: '서초동 경로당', place: '서울 서초구',
+        contact_phone: '02-586-0000', apply_method: '방문', to_date: '2026-12-31', min_age: 60 }
+    : null),
+  toPromptJob: require('../jobs').toPromptJob,
+};
+
+test('SMS: a job message is built from the stored posting', async () => {
+  const out = await smsContent(PERSONA, { jobId: 'real-1', kind: 'send' }, JOBSTUB);
+  assert.ok(out.includes('경로당 급식 도우미'));
+  assert.ok(out.includes('02-586-0000'), 'the senior gets the number they can act on');
+  assert.ok(out.startsWith('[서초 어르신 행복이음 센터] 이음이'));
+});
+
+test('SMS: the job source has no wage, so no wage line is printed', async () => {
+  const out = await smsContent(PERSONA, { jobId: 'real-1', kind: 'send' }, JOBSTUB);
+  assert.ok(!/급여/.test(out), 'a wage line would be invented — the field does not exist (§11)');
+  assert.ok(!/150만원/.test(out));
+});
+
+test('SMS: a posting that is not in the table cannot be sent', async () => {
+  // The regression this exists for: `pick` was resolved in the browser against a
+  // hardcoded demo array, so a senior asking about a real posting was texted an
+  // invented one, wage included. An id the database does not know now produces
+  // nothing at all rather than a plausible message.
+  const out = await smsContent(PERSONA, { jobId: 'made-up', kind: 'send' }, JOBSTUB);
+  assert.strictEqual(out, '');
+});
+
+test('SMS: a welfare answer is sent with its organisation and link', async () => {
+  const out = await smsContent(PERSONA,
+    { serviceCode: 's1', summary: '야간에 문 연 약국을 찾고 계십니다.' }, JOBSTUB);
+  assert.ok(out.includes('응급 및 야간/휴일 진료'));
+  assert.ok(out.includes('야간에 문 연 약국을 찾고 계십니다.'), 'the summary of the answer travels');
+  assert.ok(out.includes('휴일지킴이약국'), 'the organisation comes from the catalogue');
+  assert.ok(out.includes('https://www.pharm114.or.kr/'), 'and so does the link (client V03)');
+});
+
+test('SMS: a service the centre has not enabled contributes nothing', async () => {
+  const out = await smsContent(PERSONA, { serviceCode: 's999' }, JOBSTUB);
+  assert.strictEqual(out, '', 'an unknown code must not produce a message about nothing');
+});
+
+test('SMS: nothing to say produces no message at all', async () => {
+  assert.strictEqual(await smsContent(PERSONA, {}, JOBSTUB), '');
+  assert.strictEqual(await smsContent(PERSONA, { summary: '   ' }, JOBSTUB), '');
+});
+
+test('SMS: a caller-supplied summary is capped', async () => {
+  const out = await smsContent(PERSONA, { summary: 'ㅇ'.repeat(5000) }, JOBSTUB);
+  assert.ok(out.length < 500, 'the one free-text field cannot become an arbitrary payload');
 });
 
 // ================================================================ run

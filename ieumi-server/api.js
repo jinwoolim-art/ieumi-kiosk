@@ -402,10 +402,16 @@ async function listServices(req, res, user, url) {
     `SELECT s.id, s.code, s.scope, s.category,
             COALESCE(cs.override_sub, s.sub)                 AS sub,
             COALESCE(cs.override_description, s.description) AS description,
+            COALESCE(cs.override_org,  s.org)                AS org,
+            COALESCE(cs.override_link, s.link)               AS link,
+            s.update_method,
             s.keywords,
             s.sub                    AS base_sub,
             s.description            AS base_description,
-            cs.override_sub IS NOT NULL OR cs.override_description IS NOT NULL AS overridden,
+            s.org                    AS base_org,
+            s.link                   AS base_link,
+            cs.override_sub IS NOT NULL OR cs.override_description IS NOT NULL
+              OR cs.override_org IS NOT NULL OR cs.override_link IS NOT NULL AS overridden,
             COALESCE(cs.enabled, false)   AS enabled,
             COALESCE(cs.sort_order, 9999) AS sort_order
        FROM services s
@@ -414,6 +420,319 @@ async function listServices(req, res, user, url) {
       ORDER BY sort_order, s.code`,
     [centerId]);
   return send(res, 200, { services: rows });
+}
+
+// ------------------------------------------------------------ catalogue import
+// 서비스 카탈로그 가져오기 — how a new revision of the service list reaches the
+// running platform without a deploy (the client's V03 → V04 question).
+//
+// The file the client produces is the input format, verbatim: a JSON array of
+// {id, category, sub, description, keywords, update_method, org, link}. Our own
+// seed file uses shorter keys for the same fields, so both spellings are
+// accepted and neither side has to reformat anything.
+const FIELD = {
+  code: ['code', 'id'],
+  category: ['category', 'cat'],
+  sub: ['sub'],
+  description: ['description', 'desc'],
+  keywords: ['keywords', 'kw'],
+  org: ['org'],
+  link: ['link', 'url'],
+  update_method: ['update_method', 'method'],
+};
+const pickField = (row, names) => {
+  for (const n of names) if (row[n] !== undefined && row[n] !== null) return row[n];
+  return undefined;
+};
+
+const METHODS = ['manual', 'realtime_api', 'scraping'];
+const CODE_RE = /^[a-z0-9][a-z0-9_-]{0,39}$/i;
+
+/**
+ * Normalise one incoming row, or explain why it cannot be used.
+ * A row is never half-applied: either every field it carries is acceptable or
+ * the whole row is skipped and reported, which is what makes the preview honest.
+ */
+function normaliseServiceRow(raw, i) {
+  const at = i + 1;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { error: { at, reason: '항목이 객체가 아닙니다.' } };
+  }
+  const get = (k) => {
+    const v = pickField(raw, FIELD[k]);
+    return v === undefined ? undefined : str(v, k === 'link' ? 1000 : 500).trim();
+  };
+
+  const code = get('code');
+  if (!code) return { error: { at, reason: 'code(id)가 없습니다.' } };
+  if (!CODE_RE.test(code)) return { error: { at, code, reason: 'code 형식이 올바르지 않습니다.' } };
+
+  const link = get('link');
+  // A link is what a senior is ultimately sent. Anything that is not plain http
+  // is refused rather than stored — javascript: in a text message is somebody
+  // else's problem to explain.
+  if (link && !/^https?:\/\//i.test(link)) {
+    return { error: { at, code, reason: '링크는 http:// 또는 https:// 여야 합니다.' } };
+  }
+
+  const method = get('update_method');
+  if (method && !METHODS.includes(method)) {
+    return { error: { at, code, reason: `update_method는 ${METHODS.join(' / ')} 중 하나여야 합니다.` } };
+  }
+
+  const row = { code };
+  for (const k of ['category', 'sub', 'description', 'keywords', 'org', 'link']) {
+    const v = get(k);
+    if (v !== undefined) row[k] = v;
+  }
+  if (method) row.update_method = method;
+  return { row };
+}
+
+// The columns an import is allowed to touch. `code` addresses the row and is
+// never itself updated; scope and center_id are decided by the caller's role,
+// never by the file.
+const IMPORTABLE = ['category', 'sub', 'description', 'keywords', 'org', 'link', 'update_method'];
+
+/**
+ * POST /api/services/import — upsert a catalogue revision.
+ *
+ * Three properties matter more than the code here:
+ *  · `dry_run` reports exactly what would change and writes nothing, so a
+ *    centre sees the consequences before accepting them (§3-4, the same shape
+ *    as the roster paste the client singled out).
+ *  · Re-importing an unchanged file reports 60 unchanged and writes nothing —
+ *    an import is safe to repeat.
+ *  · A row absent from the file is left alone, never deleted. A partial file is
+ *    a partial update, not a truncation; retiring a service is a separate,
+ *    deliberate act (`active`).
+ */
+async function importServices(req, res, user, url) {
+  auth.requireRole(user, 'master', 'center_admin');
+  requireJsonRequest(req);
+  const body = await readJson(req);
+  const items = Array.isArray(body) ? body : (Array.isArray(body.items) ? body.items : null);
+  if (!items) throw new HttpError(400, '가져올 목록이 없습니다.');
+  if (items.length > 2000) throw new HttpError(413, '한 번에 2000개까지 가져올 수 있습니다.');
+
+  // Master maintains the nationwide catalogue; a centre maintains its own.
+  // The file cannot choose — that is the tenant boundary, and it is decided
+  // from the session, exactly like every other write here. Only the centre
+  // case needs a centre resolved; nationwide content belongs to no one centre.
+  const asCommon = user.role === 'master' && body.scope !== 'center';
+  const scope = asCommon ? 'common' : 'center';
+  const centerId = asCommon ? null : auth.requireCenter(user, url.searchParams.get('center'));
+  const owner = asCommon ? null : centerId;
+  const dryRun = !!body.dry_run;
+
+  const skipped = [];
+  const rows = [];
+  const seen = new Set();
+  items.forEach((raw, i) => {
+    const { row, error } = normaliseServiceRow(raw, i);
+    if (error) return skipped.push(error);
+    if (seen.has(row.code)) {
+      return skipped.push({ at: i + 1, code: row.code, reason: '파일 안에서 code가 중복됩니다.' });
+    }
+    seen.add(row.code);
+    row._at = i + 1;          // kept only to report a clash against the right line
+    rows.push(row);
+  });
+
+  const existing = new Map((await db.all(
+    `SELECT code, category, sub, description, keywords, org, link, update_method
+       FROM services
+      WHERE scope = $1 AND center_id IS NOT DISTINCT FROM $2 AND code = ANY($3::text[])`,
+    [scope, owner, rows.map((r) => r.code)],
+  )).map((r) => [r.code, r]));
+
+  // 같은 코드가 다른 범위에 이미 있으면 건너뜁니다.
+  //
+  // A centre's list is "everything common, plus everything of mine", so the same
+  // code living in both scopes shows the senior's own dashboard two rows with one
+  // name and hands the kiosk an ambiguous service_code. Real case: the seed put
+  // 서초's 긴급복지지원 at s19 because its text mentions 서초, and the client's file
+  // reuses s19 for 노인여가복지시설. Importing it as nationwide content would not
+  // have failed — it would have silently produced a duplicate. Refusing and
+  // naming the clash is the only outcome a person can act on.
+  const clash = new Map((await db.all(
+    `SELECT s.code, s.scope, c.name AS center_name
+       FROM services s
+       LEFT JOIN centers c ON c.id = s.center_id
+      WHERE s.code = ANY($1::text[])
+        AND NOT (s.scope = $2 AND s.center_id IS NOT DISTINCT FROM $3)
+        AND (s.scope = 'common' OR s.center_id = COALESCE($3, s.center_id))`,
+    [rows.map((r) => r.code), scope, owner],
+  )).map((r) => [r.code, r]));
+
+  const created = [], updated = [], unchanged = [], writable = [];
+  for (const row of rows) {
+    const other = clash.get(row.code);
+    if (other) {
+      skipped.push({ at: row._at, code: row.code,
+        reason: other.scope === 'common'
+          ? '이 코드는 이미 전국 공통 서비스로 등록되어 있습니다. 다른 code를 쓰거나 마스터에게 수정을 요청하세요.'
+          : `이 코드는 이미 '${other.center_name}' 전용 서비스로 등록되어 있습니다. 다른 code를 써 주세요.` });
+      continue;
+    }
+    writable.push(row);
+    const was = existing.get(row.code);
+    if (!was) { created.push(row.code); continue; }
+    const changes = IMPORTABLE
+      .filter((k) => row[k] !== undefined && row[k] !== was[k])
+      .map((k) => ({ field: k, from: was[k], to: row[k] }));
+    (changes.length ? updated : unchanged).push(
+      changes.length ? { code: row.code, changes } : row.code);
+  }
+
+  const summary = {
+    scope,
+    dry_run: dryRun,
+    total: items.length,
+    created: created.length,
+    updated: updated.length,
+    unchanged: unchanged.length,
+    skipped: skipped.length,
+    detail: { created, updated, skipped },
+  };
+  if (dryRun || !writable.length) return send(res, 200, summary);
+
+  // Resolve each row against what is already stored *before* writing, so a file
+  // that omits a column leaves that column alone. Doing this in SQL would mean
+  // COALESCE against `excluded`, and `excluded` cannot carry a NULL through a
+  // NOT NULL column — the omission would arrive as '' and quietly blank the
+  // existing value. The comparison above already loaded every row this needs.
+  const DEFAULTS = { update_method: 'manual' };
+  const final = writable.map((row) => {
+    const was = existing.get(row.code) || {};
+    const out = { code: row.code };
+    for (const k of IMPORTABLE) {
+      out[k] = row[k] !== undefined ? row[k]
+             : was[k] !== undefined ? was[k]
+             : (DEFAULTS[k] || '');
+    }
+    return out;
+  });
+
+  // One statement per field set rather than one per row: the same reason
+  // savePriority batches, and this runs against a database an ocean away.
+  const conflict = asCommon
+    ? `(code) WHERE scope = 'common'`
+    : `(center_id, code) WHERE scope = 'center'`;
+
+  await db.tx(async (c) => {
+    await c.query(
+      `INSERT INTO services (code, scope, center_id, category, sub, description,
+                             keywords, org, link, update_method)
+       SELECT x.code, $1, $2, x.category, x.sub, x.description,
+              x.keywords, x.org, x.link, x.update_method
+         FROM unnest($3::text[], $4::text[], $5::text[], $6::text[],
+                     $7::text[], $8::text[], $9::text[], $10::text[])
+           AS x(code, category, sub, description, keywords, org, link, update_method)
+       ON CONFLICT ${conflict}
+       DO UPDATE SET category      = excluded.category,
+                     sub           = excluded.sub,
+                     description   = excluded.description,
+                     keywords      = excluded.keywords,
+                     org           = excluded.org,
+                     link          = excluded.link,
+                     update_method = excluded.update_method,
+                     updated_at    = now()`,
+      [scope, owner, final.map((r) => r.code),
+       ...IMPORTABLE.map((k) => final.map((r) => r[k]))],
+    );
+
+    // A brand-new service needs a center_services row or it cannot be ordered
+    // or switched on. Disabled by default — an import adds to what a centre may
+    // offer, it never decides for the centre what it offers.
+    //
+    // Nationwide content lands in every centre, the way createCenter hands a new
+    // centre the whole common catalogue; a centre's own content lands only there.
+    if (created.length) {
+      await c.query(
+        `INSERT INTO center_services (center_id, service_id, enabled, sort_order)
+         SELECT ctr.id, s.id, false,
+                COALESCE((SELECT max(cs.sort_order) + 1
+                            FROM center_services cs WHERE cs.center_id = ctr.id), 0)
+                  + row_number() OVER (PARTITION BY ctr.id ORDER BY s.code)
+           FROM services s
+           JOIN centers ctr ON ($1::uuid IS NULL AND ctr.active) OR ctr.id = $1
+          WHERE s.scope = $2 AND s.center_id IS NOT DISTINCT FROM $3
+            AND s.code = ANY($4::text[])
+         ON CONFLICT (center_id, service_id) DO NOTHING`,
+        [centerId, scope, owner, created]);
+    }
+  });
+
+  // Common content reaches every centre, so every cached kiosk copy is stale.
+  asCommon ? kioskCache.bustAll() : kioskCache.bust(centerId);
+  return send(res, 200, summary);
+}
+
+/**
+ * PATCH /api/services/:id — correct one entry from the dashboard.
+ *
+ * Which row actually changes depends on who is asking, and that is §3-2 rather
+ * than a special case: master edits nationwide content at the source, so the fix
+ * reaches every centre. A centre editing an inherited entry writes an *override*
+ * instead, leaving the nationwide row alone — which is what the override columns
+ * have been for since 001, with nothing writing them until now. A centre's own
+ * content it simply owns, and edits directly.
+ */
+const EDITABLE = ['category', 'sub', 'description', 'keywords', 'org', 'link', 'update_method'];
+const OVERRIDABLE = { sub: 'override_sub', description: 'override_description',
+                      org: 'override_org', link: 'override_link' };
+
+async function updateService(req, res, user, url, id) {
+  auth.requireRole(user, 'master', 'center_admin');
+  if (!UUID.test(String(id || ''))) throw new HttpError(400, '잘못된 서비스 주소입니다.');
+  requireJsonRequest(req);
+  const body = await readJson(req);
+
+  const { row: patch, error } = normaliseServiceRow({ code: 'x', ...body }, 0);
+  if (error) throw new HttpError(400, error.reason);
+  delete patch.code;
+
+  const centerId = user.role === 'master'
+    ? auth.resolveCenter(user, url.searchParams.get('center'))
+    : auth.requireCenter(user, url.searchParams.get('center'));
+
+  // The tenant boundary: a centre may only reach rows it can already see —
+  // nationwide content, or its own. Anything else simply is not found.
+  const svc = await db.one(
+    `SELECT id, scope, center_id FROM services
+      WHERE id = $1 AND (scope = 'common' OR center_id = $2)`,
+    [id, centerId]);
+  if (!svc) throw new HttpError(404, '서비스를 찾을 수 없습니다.');
+
+  const editBase = svc.scope === 'center' || user.role === 'master';
+
+  if (editBase) {
+    const fields = EDITABLE.filter((k) => patch[k] !== undefined);
+    if (!fields.length) throw new HttpError(400, '변경할 내용이 없습니다.');
+    await db.query(
+      `UPDATE services SET ${fields.map((k, i) => `${k} = $${i + 2}`).join(', ')}, updated_at = now()
+        WHERE id = $1`,
+      [svc.id, ...fields.map((k) => patch[k])]);
+  } else {
+    const fields = Object.keys(OVERRIDABLE).filter((k) => patch[k] !== undefined);
+    if (!fields.length) {
+      throw new HttpError(400, '공통 서비스는 이름·설명·담당기관·링크만 우리 복지관에 맞게 바꿀 수 있습니다.');
+    }
+    // An empty string is how the dashboard says "drop my override and inherit
+    // the nationwide value again" — distinct from never having set one.
+    const cols = fields.map((k) => OVERRIDABLE[k]);
+    const vals = fields.map((k) => (patch[k] === '' ? null : patch[k]));
+    await db.query(
+      `INSERT INTO center_services (center_id, service_id, ${cols.join(', ')})
+            VALUES ($1, $2, ${cols.map((_, i) => `$${i + 3}`).join(', ')})
+       ON CONFLICT (center_id, service_id)
+       DO UPDATE SET ${cols.map((c2) => `${c2} = excluded.${c2}`).join(', ')}, updated_at = now()`,
+      [centerId, svc.id, ...vals]);
+  }
+
+  svc.scope === 'common' && user.role === 'master' ? kioskCache.bustAll() : kioskCache.bust(centerId);
+  return send(res, 200, { ok: true, scope: svc.scope, overridden: !editBase });
 }
 
 async function savePriority(req, res, user, url) {
@@ -659,6 +978,8 @@ async function kioskContext(req, res, url) {
     `SELECT s.code, s.category,
             COALESCE(cs.override_sub, s.sub)                 AS sub,
             COALESCE(cs.override_description, s.description) AS description,
+            COALESCE(cs.override_org,  s.org)                AS org,
+            COALESCE(cs.override_link, s.link)               AS link,
             s.keywords, cs.sort_order
        FROM center_services cs
        JOIN services s ON s.id = cs.service_id
@@ -801,7 +1122,9 @@ const ROUTES = [
   ['DELETE', /^\/api\/members\/([\w-]+)$/,   deleteMember],
 
   ['GET',    /^\/api\/services$/,            listServices],
+  ['POST',   /^\/api\/services\/import$/,    importServices],
   ['PUT',    /^\/api\/services\/priority$/,  savePriority],
+  ['PATCH',  /^\/api\/services\/([\w-]+)$/,  updateService],
 
   ['GET',    /^\/api\/settings$/,            getSettings],
   ['PATCH',  /^\/api\/settings$/,            updateSettings],

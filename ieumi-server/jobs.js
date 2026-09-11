@@ -315,7 +315,11 @@ async function forCenterRegion(region, limit = 6) {
  * differently on purpose: reading the office address out as the workplace sends
  * a senior to the wrong city.
  */
+// `id` rides along so a later /sms can re-read the posting from the database
+// rather than trusting a copy the browser hands back. jobsText drops it before
+// the prompt is built, so it costs nothing in tokens and is never read aloud.
 const toPromptJob = (j) => ({
+  id: j.id,
   gu: j.place,
   job: j.title,
   org: j.org,
@@ -328,7 +332,21 @@ const toPromptJob = (j) => ({
 
 const status = () => db.one('SELECT * FROM job_sync_state WHERE id = 1');
 
+/**
+ * One posting, by id — the source for a text message.
+ *
+ * The kiosk used to hand the whole posting back for /sms to format, which meant
+ * the body of a real text message was whatever the browser said it was. Reading
+ * it here instead costs one indexed lookup and makes an invented posting
+ * unsendable: an id that is not in the table produces no message.
+ */
+const byId = (id) => db.one(
+  `SELECT id, title, org, place, deadline, apply_method,
+          to_char(to_date, 'YYYY-MM-DD') AS to_date,
+          address, contact_phone, min_age, headcount
+     FROM jobs WHERE id = $1`, [String(id || '')]);
+
 module.exports = {
-  sync, forCenterRegion, toPromptJob, status,
+  sync, forCenterRegion, toPromptJob, status, byId,
   normaliseSido, splitPlace, placeFromAddress, fetchList, KEY,
 };

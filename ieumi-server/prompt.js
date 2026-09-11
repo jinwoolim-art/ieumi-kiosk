@@ -18,11 +18,17 @@ const DEFAULT_PERSONA = kioskContext.DEFAULT_PERSONA;
 // 복지관이 켜 놓은 서비스 목록 (§3-2, §6-P1).
 // The dashboard's "서비스 우선순위" selection is what this renders — the order is
 // the order the centre chose, and it is what Ieumi offers first.
+// `org` is the organisation that actually runs the service. It comes from the
+// centre's catalogue, so naming it is quoting a record rather than guessing —
+// which is the difference between Ieumi being useful and Ieumi inventing a
+// phone number. The link is deliberately absent: a URL read aloud to a senior
+// is noise. It travels by SMS instead (server.js /sms).
 const servicesText = (services) => (!services || !services.length)
   ? ''
   : '\n\n[우리 복지관이 안내하는 서비스] — 위에서부터 우선순위입니다\n'
     + services.map((s, i) =>
-        `${i + 1}. (${s.category}) ${s.sub} — ${s.description}`).join('\n');
+        `${i + 1}. (${s.category}) ${s.sub} — ${s.description}`
+        + (s.org ? ` [담당기관: ${s.org}]` : '')).join('\n');
 
 const buildSystem = (p = {}) => {
   const name = p.ieumi_name || DEFAULT_PERSONA.ieumi_name;
@@ -37,7 +43,7 @@ const buildSystem = (p = {}) => {
   const serviceRules = services.length ? `
 - 어르신이 "뭘 도와줄 수 있어?"처럼 막연히 물으시면, 위 서비스 목록에서 위에서부터 <두 가지만> 아주 짧게 말하고 "어떤 게 필요하세요?"라고 되묻습니다. 한 가지당 한 마디면 충분합니다. 설명을 길게 붙이거나 전부 나열하지 마세요 — 어르신은 화면이 아니라 귀로 들으십니다.
 - 어르신 말씀이 목록의 서비스와 맞으면, 저희가 도와드릴 수 있다고 답하고 담당 선생님께 연결해 드리겠다고 안내합니다.
-- 일자리를 제외한 서비스는 아직 실시간 정보가 없습니다. 병원 이름·전화번호·금액·날짜처럼 구체적인 내용은 절대 지어내지 말고, 위 설명 범위 안에서만 말한 뒤 "자세한 건 담당 선생님께 전해드릴게요"로 받습니다.
+- 일자리를 제외한 서비스는 아직 실시간 정보가 없습니다. 전화번호·금액·날짜·신청 자격처럼 구체적인 내용은 절대 지어내지 마세요. 목록에 [담당기관]이 적혀 있으면 그 기관 이름은 말해도 됩니다 — 목록에 있는 사실이니까요. 그 밖의 자세한 내용은 "자세한 건 담당 선생님께 전해드릴게요"로 받고, 원하시면 문자로 기관과 인터넷 주소를 보내드리겠다고 안내합니다.
 - 목록에 없는 요청도 거절하지 말고 "담당 선생님께 꼭 전해드릴게요"로 받아, 요약에 남깁니다.` : '';
 
   return `당신은 '${name}', ${center}의 ${tone} 말하는 AI 말벗 도우미입니다.${servicesText(services)}

@@ -149,15 +149,15 @@ async function lookupMember(p){
   }catch(e){}
 }
 
-// 비디오 시연용 · 서초구 일자리 2건 (비교·선택 시나리오)
-const JOBS=[
-  {gu:'서초구 방배동', job:'아파트 미화원(건물 청소)', org:'방배동 아파트 관리사무소',
-   pay:'월급 150만원', work:'오전 8시부터 낮 12시까지, 하루 4시간, 주 5일', age:'만 60세 이상',
-   to:'8월 31일까지', place:'서초구 방배동', tel:'관리사무소 02-533-0000', note:'몸을 조금 쓰는 활동적인 일, 급여가 더 높음'},
-  {gu:'서초구 서초동', job:'경로당 급식 도우미(배식·정리)', org:'서초동 경로당',
-   pay:'시급 만 삼백이십 원', work:'점심때 오전 11시부터 오후 2시까지, 하루 3시간, 주 4일', age:'만 60세 이상',
-   to:'8월 20일까지', place:'서초구 서초동', tel:'경로당 02-586-0000', note:'앉아서도 가능한 가벼운 일, 시간이 더 짧음'},
-];
+// 일자리 목록은 서버가 이 복지관 지역으로 직접 찾아서 돌려줍니다.
+//
+// 여기에 하드코딩된 시연용 2건이 있었습니다 — "월급 150만원", "시급 만 삼백이십 원".
+// The server builds the prompt from real postings, so `pick` was an index into
+// *its* list; resolving it against a hardcoded array here meant a senior who
+// asked about a real posting was shown, and texted, a different invented one —
+// with a wage the source has no field for (PROJECT.md §11). The server resolves
+// the index now and sends back the posting it actually used.
+let JOBS=[];
 let history=[], active=false, offerSms=false, pickedJob=null, awaitingFollowup=false;
 let lastSummary='', lastCategory='', smsSent=false;
 let lastServiceCode='', lastServiceName='';   // 이음이가 짚어낸 서비스 (§6-P1)
@@ -325,7 +325,7 @@ async function botTurn(){
 
   try{
     const r = await fetch(API+'/chat',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({history, jobs:JOBS, c:CTOKEN, stream:true})});
+      body:JSON.stringify({history, c:CTOKEN, stream:true})});
 
     if(!r.ok || !r.body) throw new Error('stream unavailable');
 
@@ -361,7 +361,7 @@ async function botTurn(){
     // 스트리밍이 막힌 환경(프록시 등)에서는 예전 방식으로 한 번 더 시도합니다.
     try{
       const r = await fetch(API+'/chat',{method:'POST',headers:{'content-type':'application/json'},
-        body:JSON.stringify({history, jobs:JOBS, c:CTOKEN})});
+        body:JSON.stringify({history, c:CTOKEN})});
       const d = await r.json();
       if(d.error) throw new Error(d.error);
       meta = d;
@@ -391,7 +391,9 @@ async function botTurn(){
   if(p.summary) lastSummary = p.summary;
   if(meta && meta.serviceCode){ lastServiceCode = meta.serviceCode; lastServiceName = meta.serviceName||''; }
   if(p.category) lastCategory = p.category;
-  if(p.pick && JOBS[p.pick-1]) pickedJob = JOBS[p.pick-1];   // 어르신이 고른 자리 기억
+  // 서버가 실제로 안내한 목록과, 어르신이 고른 자리 — 둘 다 서버가 정해서 보냅니다.
+  if(meta && Array.isArray(meta.jobs)) JOBS = meta.jobs;
+  if(meta && meta.job) pickedJob = meta.job;
 
   await pump.flush();          // 마지막 문장까지 재생이 끝나기를 기다립니다
   if(offerSms){ setStatus('문자를 원하시면 "문자 받기"를 눌러도 돼요'); }
@@ -408,12 +410,20 @@ async function onUser(text){
     awaitingFollowup=false;
     const nm=memberName();
     if(/(응|그래|네|예|보내|좋아|해줘|부탁)/.test(text)){
-      // 어르신이 찾으시는 것과 비슷한 '다른 일자리'(선택 안 한 나머지) 추천 발송
-      const other=JOBS.find(j=>j!==(pickedJob||JOBS[0]))||JOBS[1]||JOBS[0];
-      smsSent=true; showSentCard('✅ 다른 일자리도 보냈어요', other, 'send'); setStatus('');
-      fetch(API+'/sms',{method:'POST',headers:{'content-type':'application/json'},
-        body:JSON.stringify({to:phone, jobs:[other], history, c:CTOKEN})}).catch(()=>{});
-      const m=(nm?nm+' 어르신, ':'')+'어르신께 맞을 만한 다른 일자리도 문자로 보내드렸어요. 도움이 되시길 바라요. 안녕히 가세요!';
+      // 어르신이 찾으시는 것과 비슷한 '다른 일자리'(선택 안 한 나머지) 추천 발송.
+      // 목록은 서버가 실제로 안내한 것이므로, 없으면 없다고 말합니다 — 예전에는
+      // 하드코딩된 시연용 자리로 되돌아갔습니다.
+      const other=JOBS.find(j=>!pickedJob||j.id!==pickedJob.id);
+      let m;
+      if(other){
+        const keep=pickedJob; pickedJob=other;
+        const content=await requestSms('send').catch(()=>'');
+        pickedJob=keep;
+        smsSent=true; showSentCard('✅ 다른 일자리도 보냈어요', content); setStatus('');
+        m=(nm?nm+' 어르신, ':'')+'어르신께 맞을 만한 다른 일자리도 문자로 보내드렸어요. 도움이 되시길 바라요. 안녕히 가세요!';
+      }else{
+        m=(nm?nm+' 어르신, ':'')+'지금은 알려드릴 다른 자리가 없어요. 담당 선생님께 전해드릴게요. 안녕히 가세요!';
+      }
       history.push({role:'assistant',content:m}); say(m); setStatus(''); await speak(m);
     }else{
       const m='네, 도움이 되셨길 바라요. 안녕히 가세요!';
@@ -449,45 +459,56 @@ async function openConfirm(){
   }
   kpEntry.classList.add('off'); kpConfirm.classList.remove('off');
 }
-// 문자 본문 (server.js /sms 와 동일 포맷 — 화면 미리보기 = 실제 발송 내용)
-function buildSmsText(j, kind){
-  if(kind==='followup'){
-    return `[${centerName()}] ${ieumiName()} 추가 안내
-아까 문의하신 자세한 내용입니다.
-▸ ${j.gu} · ${j.job}
-▸ 근무 ${j.work||'담당 기관 문의'}
-▸ 문의 ${j.tel||'-'}
-정확한 조건은 위 담당 기관에 확인해 주세요. 건강하세요!`;
-  }
-  return `[${centerName()}] ${ieumiName()} 안내
-▸ ${j.gu} · ${j.job}
-▸ 급여 ${j.pay}
-▸ 근무 ${j.work||'-'}
-▸ 대상 ${j.age||'-'}
-▸ 접수 ${j.to||'-'}
-▸ 문의 ${j.tel||'-'}`;
-}
 // 발송 완료 카드 표시 (문자 내용 + 받는 번호)
-function showSentCard(title, job, kind){
+//
+// 화면에 보이는 내용 = 실제로 나간 내용. The body used to be rebuilt here from a
+// second copy of the server's formatter, so the two could drift and the card
+// could show something that was never sent. /sms returns the message it built;
+// this only displays it.
+function showSentCard(title, content){
   const nm=memberName();
   kpEntry.classList.add('off'); kpConfirm.classList.add('off'); kpSent.classList.remove('off');
   kwrap.classList.remove('hidden');
   sentTitle.textContent=title;
   sentTo.innerHTML=(nm?'<b>'+nm+' 어르신</b> · ':'')+fmtp(phone);
-  smsBody.textContent=buildSmsText(job, kind);
+  smsBody.textContent=content||'';
 }
+
+/**
+ * 문자 요청 — 어떤 내용을 보낼지는 서버가 정합니다.
+ *
+ * 일자리면 일자리 번호를, 그 밖의 상담이면 서비스 코드와 요약을 보냅니다 —
+ * 담당기관·인터넷 주소는 서버가 복지관 카탈로그에서 직접 읽습니다.
+ * Sending identifiers rather than a finished message is the point: with real SMS
+ * keys configured, a body the browser dictates would be an open relay.
+ */
+async function requestSms(kind){
+  const r = await fetch(API+'/sms',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({
+      to:phone, c:CTOKEN, kind,
+      jobId: pickedJob ? pickedJob.id : undefined,
+      serviceCode: lastServiceCode || undefined,
+      summary: lastSummary || undefined,
+    })});
+  const d = await r.json().catch(()=>({}));
+  return d.content || '';
+}
+
 async function doSend(){
   const nm=memberName();
-  const job=pickedJob||JOBS[0];
   // 실발송 시도: .env에 SMS 키가 있으면 실제 문자 발송, 없으면 화면 표시만 (시연)
-  fetch(API+'/sms',{method:'POST',headers:{'content-type':'application/json'},
-        body:JSON.stringify({to:phone, jobs:[job], history, c:CTOKEN})}).catch(()=>{});
-  smsSent=true; showSentCard('✅ 문자를 보냈어요', job, 'send'); setStatus('');
+  const content = await requestSms('send').catch(()=>'');
+  smsSent=true; showSentCard('✅ 문자를 보냈어요', content); setStatus('');
   const done=(nm?nm+' 어르신, ':'')+'말씀하신 번호로 문자를 보내드렸어요.';
   history.push({role:'assistant',content:done}); say(done); offerSms=false;
   await speak(done);
   if(!active) return;
-  // 추가 제안 (어르신이 찾으시는 것과 비슷한 다른 일자리)
+
+  // 추가 제안은 '보낼 다른 자리가 실제로 있을 때'만 합니다. 복지·건강 상담이었거나
+  // 남은 자리가 없으면 묻지 않고 마무리합니다 — 예전에는 어떤 상담이든 "다른
+  // 일자리"를 권했고, 대답해도 보낼 것이 없었습니다.
+  const hasOther = JOBS.some(j=>!pickedJob||j.id!==pickedJob.id);
+  if(!hasOther){ listen(); return; }
   const fu='그리고 어르신이 찾으시는 일자리와 비슷하거나, 알려드릴 만한 다른 일자리가 또 있으면, 그것도 문자로 보내드릴까요?';
   awaitingFollowup=true; history.push({role:'assistant',content:fu}); say(fu); await speak(fu); listen();
 }

@@ -222,6 +222,30 @@ token in its URL.
 
 ---
 
+## 6b. Fixed since the client's first test
+
+- ✅ **A senior could be texted a job that does not exist.** The server built the prompt from real
+  postings, so the model's `pick` was an index into *that* list — but the browser resolved it against
+  a hardcoded two-item demo array carrying `월급 150만원` and `시급 만 삼백이십 원`, the invented
+  figures §11 exists to prevent. A senior who asked about a real posting was shown, and would have
+  been texted, a different fictional one. The server resolves `pick` now, exactly as it already did
+  for `service`, and the demo array is gone.
+- ✅ **A text message could only ever be a job posting.** After a welfare or health conversation
+  `doSend()` fell back to the same fake posting, and the server's own wording said
+  *"information about the job Ieumi told you about"* regardless of topic. `/sms` now takes a service
+  code and a summary too, and builds the message from the centre's catalogue — the organisation and
+  the link. This is the client's *"summarise the answer and send it to mobile on request"*.
+- ✅ **The browser dictated the body of a real text message.** `/sms` took the whole posting object
+  from the page and formatted it. With SMS keys configured that is an open relay pointed at seniors'
+  phones. It takes identifiers now — a posting id, a service code — and reads the content back from
+  the database; an id that is not in the table produces no message at all. The one remaining
+  free-text field (the summary) is length-capped.
+- ✅ **The "send me another job" follow-up was offered after every call**, including calls with no
+  jobs in them, and answering yes sent the hardcoded posting. It is offered only when the centre
+  actually has another posting to send.
+
+---
+
 ## 7. System structure (current)
 
 ```
@@ -291,13 +315,62 @@ per-centre persona last, or every centre pays for its own cache entry.
 
 ---
 
-## 10. Service-priority planning tool (recently added)
+## 10. The service catalogue — and how a centre updates it
 
-Admin dashboard → ⭐ **Service Priority** tab. For each center, roughly **59 services** across four
-categories (health · welfare · daily living · jobs) can be selected and ordered. Today it is a
-planning tool (a record of intent) and **is not yet wired into the kiosk** (§6-P1). It is the first
-implementation of §3-2 (common + individual inheritance) and becomes the foundation of the
-multi-tenant content structure to come.
+Admin dashboard → ⭐ **Service Priority** tab. For each center, roughly **60 services** across four
+categories (health · welfare · daily living · jobs) can be selected and ordered. It is the first
+implementation of §3-2 (common + individual inheritance), it **is** wired into the kiosk (§6-P1),
+and each entry now carries the two fields that make it actionable:
+
+| Field | What it is | Why it matters |
+|---|---|---|
+| `org` | the organisation that runs the service | Ieumi may **name it** — it is quoting a record, not guessing |
+| `link` | that organisation's web address | too long to read aloud; it travels **by SMS** instead |
+| `update_method` | `manual` / `realtime_api` / `scraping` | says which entries depend on code that can go stale silently |
+
+### How an updated list reaches a running platform
+
+The client maintains the list themselves and revises it (V03 → V04 → …). Re-running the seed does
+**not** update anything (`ON CONFLICT DO NOTHING`), so the update path is an import:
+
+**Dashboard → ⭐ 서비스 우선순위 → 📥 서비스 목록 가져오기** — drop in the JSON file, press
+**미리보기** (preview), read what will change, press **반영하기** (apply). No deploy, no restart.
+`POST /api/services/import` is the same thing for scripts.
+
+Four properties are what make it safe to hand to a centre:
+
+- **Preview first.** A dry run reports created / updated / unchanged / skipped, and for each update
+  names the field and both values. Nothing is written. (The same shape as the Excel roster paste,
+  which §3-4 says is what decides adoption.)
+- **Idempotent.** Re-importing an unchanged file reports *48 unchanged* and writes nothing.
+- **A partial file is a partial update, never a truncation.** A service absent from the file is left
+  alone. Retiring one is a separate, deliberate act.
+- **A field the file omits is left alone.** `{"id":"s1","org":"…"}` changes the organisation and
+  nothing else.
+
+**Who may write what** is decided from the session, never from the file (§3-3): master's import
+becomes nationwide content that every centre inherits at once; a centre admin's import lands in that
+centre only. A centre editing an *inherited* entry writes an **override** — the nationwide row is
+untouched and other centres never see the change.
+
+### Two codes in the client's V03 file are already taken
+
+The seed classifies anything whose text mentions 서초/서리풀 as that centre's own content, so `s19`
+and `s43` already exist as **Seocho-private** services. The client's file reuses both codes for
+different services — their `s19` is 노인여가복지시설 안내 (senior leisure facilities), ours is
+긴급복지지원 (emergency welfare support).
+
+A centre's list is *"everything common, plus everything of mine"*, so the same code in both scopes
+would show two rows with one name and hand the kiosk an ambiguous `service_code`. The import
+**refuses those two rows and names the centre that already owns the code**, and applies the other 48.
+Resolving it needs a decision from the client, not a guess from us (§12).
+
+> This also exposes a classification problem worth fixing before more centres exist: `org` reveals
+> that **36 of the client's 50 services are run by a Seocho-district organisation** (방배노인종합복지관,
+> 서초구보건소, 서초구청 …), while the text-only rule sees just one. Loaded as nationwide content,
+> 강서 would inherit "Bangbae Senior Welfare Centre" as a national service. The data also contains a
+> third tier the schema has no room for — Seoul-wide (TOPIS, 서울시 복지포털) sits between nationwide
+> and district.
 
 ---
 
