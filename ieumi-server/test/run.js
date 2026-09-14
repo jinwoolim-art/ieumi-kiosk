@@ -1366,6 +1366,49 @@ test('SMS: a caller-supplied summary is capped', async () => {
   assert.ok(out.length < 500, 'the one free-text field cannot become an arbitrary payload');
 });
 
+// ================================================================ .env parsing
+// A centre following the launcher instructions edits .env in Notepad on Windows,
+// which saves CRLF and may add a BOM. Both used to defeat the loader outright —
+// `.` does not match '\r' in JavaScript, so `(.*)$` never matched a CRLF line and
+// every key silently came back empty. The file the centre was told to fill in
+// would have loaded as if it were blank.
+test('.env: a file saved by Notepad on Windows still loads', async () => {
+  const os = require('os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ieumi-env-'));
+  const envPath = path.join(dir, '.env');
+
+  const body = [
+    '# 이음이 설정값',
+    'DATABASE_URL=postgres://u:p@host/db?sslmode=require',
+    'ANTHROPIC_API_KEY=sk-ant-test',
+    'CLOVA_SPEAKER=vian',
+    '# 문자 키는 비워 둡니다',
+    'ALIGO_API_KEY=',
+    '',
+  ];
+
+  // Load env.js against a throwaway directory by copying it next to the file.
+  const loader = path.join(dir, 'env.js');
+  fs.copyFileSync(path.join(__dirname, '..', 'env.js'), loader);
+
+  for (const [label, text] of [
+    ['LF',            body.join('\n')],
+    ['CRLF (Notepad)', body.join('\r\n')],
+    ['CRLF + BOM',    '﻿' + body.join('\r\n')],
+  ]) {
+    fs.writeFileSync(envPath, text, 'utf8');
+    delete require.cache[require.resolve(loader)];
+    const e = require(loader);
+    assert.strictEqual(e.DATABASE_URL, 'postgres://u:p@host/db?sslmode=require',
+      `${label}: the connection string must survive`);
+    assert.strictEqual(e.ANTHROPIC_API_KEY, 'sk-ant-test', `${label}: the key must survive`);
+    assert.strictEqual(e.CLOVA_SPEAKER, 'vian', `${label}: no stray carriage return on the value`);
+    assert.strictEqual(e.ALIGO_API_KEY, '', `${label}: a deliberately blank key stays blank`);
+  }
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 // ================================================================ run
 (async () => {
   console.log('\n이음이 멀티테넌트 테스트 — Ieumi multi-tenant tests\n');
