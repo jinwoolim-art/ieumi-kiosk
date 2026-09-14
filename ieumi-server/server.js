@@ -430,19 +430,6 @@ const server = http.createServer(async (req, res) => {
     // ---- 정적 파일 ----
     let p = decodeURIComponent(u.pathname);
     if (p === '/') p = '/이음이-키오스크-프로토타입.html';
-
-    // 영문 주소 별칭 — the pages are named in Korean, which a browser
-    // percent-encodes into something nobody can type, read out on a call, or put
-    // in a .bat file without escaping every `%`. These aliases are the same pages
-    // under an address a person can actually say.
-    const ALIAS = {
-      '/login':  '/로그인.html',
-      '/admin':  '/서초-이음이-관리자-대시보드.html',
-      '/staff':  '/서초-이음이-담당자-대시보드.html',
-      '/kiosk':  '/이음이-키오스크-LIVE.html',
-      '/demo':   '/이음이-키오스크-프로토타입.html',
-    };
-    if (ALIAS[p.replace(/\/$/, '')]) p = ALIAS[p.replace(/\/$/, '')];
     const fp = path.resolve(ROOT, '.' + p);
     const rel = path.relative(ROOT, fp);
     const seg = rel.split(path.sep);
@@ -467,10 +454,8 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, async () => {
   const base = `http://localhost:${PORT}`;
   console.log(`\n이음이 백엔드 실행  (model=${MODEL}, voice=${SPEAKER})`);
-  console.log(`  로그인       ${base}/login`);
-  console.log(`  관리자        ${base}/admin`);
-  console.log(`  담당자        ${base}/staff`);
-  console.log(`  프로토타입    ${base}/demo`);
+  console.log(`  로그인       ${base}/로그인.html`);
+  console.log(`  프로토타입    ${base}/이음이-키오스크-프로토타입.html`);
   if (!db.DATABASE_URL) {
     console.log(`\n  ⚠ DATABASE_URL 미설정 — 대시보드와 로그인은 동작하지 않습니다.`);
     console.log(`    (not set — the dashboards and login will not work; see README)`);
