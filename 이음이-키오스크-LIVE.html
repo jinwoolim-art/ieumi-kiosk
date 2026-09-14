@@ -25,7 +25,7 @@
   .call.listening::before,.call.listening::after{content:"";position:absolute;inset:4px;border-radius:50%;border:3px solid var(--green);animation:ping 1.4s ease-out infinite;pointer-events:none}
   .call.listening::after{animation-delay:.7s}
   @keyframes ping{0%{transform:scale(1);opacity:.6}100%{transform:scale(1.65);opacity:0}}
-  .status{position:absolute;bottom:6%;left:6%;z-index:6;font-weight:800;font-size:15px;color:var(--brand);background:#eafaf2;border:2px solid var(--green);border-radius:999px;padding:8px 14px;opacity:0;transition:.2s;max-width:55%}
+  .status{position:absolute;bottom:27%;left:6%;z-index:6;font-weight:800;font-size:15px;color:var(--brand);background:#eafaf2;border:2px solid var(--green);border-radius:999px;padding:8px 14px;opacity:0;transition:.2s;max-width:55%}
   .status.show{opacity:1}
   .hang{position:absolute;bottom:6%;right:6%;z-index:9;display:none}
   .hang.show{display:block}
@@ -33,7 +33,7 @@
   .hang.alert button{font-size:16px;padding:12px 20px;animation:hangpulse 1.1s infinite}
   @keyframes hangpulse{0%{box-shadow:0 0 0 0 rgba(239,68,68,.55);transform:scale(1)}70%{box-shadow:0 0 0 14px rgba(239,68,68,0);transform:scale(1.06)}100%{box-shadow:0 0 0 0 rgba(239,68,68,0);transform:scale(1)}}
   /* 입력 대체(타이핑) */
-  .typerow{position:absolute;bottom:22%;left:6%;right:6%;z-index:7;display:none;gap:6px}
+  .typerow{position:absolute;bottom:35%;left:6%;right:6%;z-index:7;display:none;gap:6px}
   .typerow.show{display:flex}
   .typerow input{flex:1;border:2px solid var(--line);border-radius:12px;padding:10px 12px;font-family:inherit;font-size:15px}
   .typerow button{border:none;background:var(--brand);color:#fff;font-weight:800;border-radius:12px;padding:0 14px;cursor:pointer}
@@ -50,7 +50,15 @@
   .note{position:absolute;bottom:2px;left:0;right:0;text-align:center;font-size:10px;color:#aeb9bf;z-index:1}
   .brandwm{position:absolute;bottom:15px;left:0;right:0;text-align:center;font-size:11px;font-weight:700;letter-spacing:.6px;color:#96a2a8;z-index:6;pointer-events:none}
   .off{display:none}
-  #smsBtn{position:absolute;bottom:6%;left:6%;z-index:8;background:#15704f;color:#fff;border:none;border-radius:999px;padding:11px 18px;font-weight:800;font-size:15px;cursor:pointer;box-shadow:0 10px 22px -8px rgba(21,112,79,.6)}
+  /* 통화 중 버튼 줄 — status 와 자리가 겹치지 않도록 아래에 따로 둡니다. */
+  .actions{position:absolute;bottom:5%;left:6%;width:52%;z-index:10;display:none;flex-direction:column;gap:7px}
+  .actions.show{display:flex}
+  .actions button{font-family:inherit;border:none;border-radius:999px;font-weight:800;cursor:pointer;
+    padding:13px 20px;font-size:16px;box-shadow:0 10px 22px -8px rgba(0,0,0,.35)}
+  #talkBtn{background:#15704f;color:#fff;font-size:19px;padding:15px 20px}
+  #talkBtn.on{background:#b91c1c;animation:talkpulse 1.2s infinite}
+  @keyframes talkpulse{0%,100%{box-shadow:0 0 0 0 rgba(185,28,28,.5)}50%{box-shadow:0 0 0 12px rgba(185,28,28,0)}}
+  #smsBtn{background:#e2e8f0;color:#15704f}
   .cbtns{display:flex;gap:10px;margin-top:16px}
   .cbtns button{flex:1;font-family:inherit;font-size:20px;font-weight:900;padding:16px 0;border-radius:14px;border:none;cursor:pointer}
   .cok{background:var(--brand);color:#fff}.cno{background:#e2e8f0;color:#475569}
@@ -69,7 +77,15 @@
 
   <button class="call invite" id="call"><img src="assets/prototype/전화아이콘.png" alt="통화"/></button>
   <div class="hang" id="hang"><button id="hangBtn">통화 종료</button></div>
-  <button id="smsBtn" style="display:none">📩 문자 받기</button>
+
+  <!-- 통화 중 어르신이 누를 수 있는 버튼들.
+       '문자 받기'는 예전에 status 와 같은 자리에 있었고, 보이게 만드는 코드가
+       한 줄도 없어서 실제로는 누를 수 없었습니다 — 이음이는 "문자 받기를 누르세요"
+       라고 말하는데 화면에는 그 버튼이 없었습니다. -->
+  <div class="actions" id="actions">
+    <button id="talkBtn">🎤 말씀하기</button>
+    <button id="smsBtn">📩 문자 받기</button>
+  </div>
 
   <div class="typerow" id="typerow">
     <input id="typein" placeholder="말이 안 되면 여기에 입력…"/>
@@ -111,7 +127,7 @@
 const $=s=>document.querySelector(s);
 const bubble=$('#bubble'), statusEl=$('#status'), call=$('#call'), hang=$('#hang'),
       typerow=$('#typerow'), kwrap=$('#kwrap'), num=$('#num'),
-      smsBtn=$('#smsBtn'), kpEntry=$('#kpEntry'), kpConfirm=$('#kpConfirm'), cnum=$('#cnum'), ctitle=$('#ctitle'),
+      smsBtn=$('#smsBtn'), talkBtn=$('#talkBtn'), actions=$('#actions'), kpEntry=$('#kpEntry'), kpConfirm=$('#kpConfirm'), cnum=$('#cnum'), ctitle=$('#ctitle'),
       kpSent=$('#kpSent'), sentTitle=$('#sentTitle'), sentTo=$('#sentTo'), smsBody=$('#smsBody');
 const API=''; // 같은 오리진(localhost:8791)
 const KO={'0':'공','1':'일','2':'이','3':'삼','4':'사','5':'오','6':'육','7':'칠','8':'팔','9':'구'};
@@ -190,16 +206,56 @@ async function fileRequest(){
   }catch(e){}
 }
 
-const setStatus=(t,on=true)=>{statusEl.textContent=t;statusEl.classList.toggle('show',on&&!!t);call.classList.toggle('listening',/듣고|말씀/.test(t));};
+const setStatus=(t,on=true)=>{statusEl.textContent=t;statusEl.classList.toggle('show',on&&!!t);};
 const say=(t)=>{bubble.innerHTML=t;bubble.classList.remove('hide');};
 
-// ---- 음성 인식 (브라우저 STT) ----
+// ---- 음성 인식 (브라우저 STT) — 눌러서 말하기 ----
+//
+// 예전에는 이음이가 답을 마치면 곧바로 마이크를 다시 켰습니다. 조용한 책상에서는
+// 괜찮았지만, 마이크가 주변 소음·정적을 말로 알아듣고 그것이 다시 질문이 되어
+// → 또 답하고 → 또 마이크를 켜는 무한 반복이 일어났습니다. 어르신이 타이핑으로
+// 시작해도 답변 뒤에 마이크가 켜져 똑같이 반복됐습니다.
+//
+// 그래서 이제는 <어르신이 '말씀하기'를 누를 때만> 듣습니다. 자동으로 켜지지
+// 않으니 그 고리 자체가 생기지 않습니다. 경로당은 원래 시끄러운 곳입니다.
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-let rec=null;
+let rec=null, listening=false;
+
+function paintTalk(){
+  talkBtn.textContent = listening ? '🔴 듣고 있어요 (누르면 멈춤)' : '🎤 말씀하기';
+  talkBtn.classList.toggle('on', listening);
+  call.classList.toggle('listening', listening);
+}
+
 if(SR){ rec=new SR(); rec.lang='ko-KR'; rec.interimResults=false; rec.maxAlternatives=1;
-  rec.onresult=e=>{ const t=e.results[0][0].transcript.trim(); if(t) onUser(t); };
-  rec.onerror=()=>{ if(active) setStatus('말이 안 들려요. 아래에 입력해 주세요.'); typerow.classList.add('show'); };
-  rec.onend=()=>{};
+  rec.onresult=e=>{
+    const r=e.results[0][0];
+    const t=(r.transcript||'').trim();
+    // 소음 거르기. 글자 수로 자르지는 않습니다 — 한국어에서 "네", "예"는
+    // 한 글자짜리 정상 대답이라, 짧다고 버리면 진짜 대답을 버리게 됩니다.
+    // 대신 빈 결과와, 브라우저가 스스로 자신 없다고 말한 결과만 무시합니다.
+    const conf = typeof r.confidence==='number' ? r.confidence : 0;
+    if(!t || (conf>0 && conf<0.3)){
+      if(active) setStatus('잘 못 들었어요. 다시 한 번 눌러서 말씀해 주세요.');
+      return;
+    }
+    onUser(t);
+  };
+  rec.onerror=()=>{ listening=false; paintTalk();
+    if(active){ setStatus('말이 안 들려요. 아래에 입력해 주세요.'); typerow.classList.add('show'); } };
+  rec.onend=()=>{ listening=false; paintTalk(); };
+}
+
+function startListening(){
+  if(!active || listening) return;
+  if(!rec){ typerow.classList.add('show'); setStatus('아래에 입력해 주세요'); return; }
+  try{ rec.start(); listening=true; setStatus('말씀하세요 🎙️'); }
+  catch(e){ listening=false; }
+  paintTalk();
+}
+function stopListening(){
+  if(rec && listening){ try{ rec.stop(); }catch(e){} }
+  listening=false; paintTalk();
 }
 // 무응답(침묵) 감지 → 통화 종료 버튼 강조 + 안내
 let idleTimer=null;
@@ -207,10 +263,26 @@ function clearIdle(){ if(idleTimer){clearTimeout(idleTimer);idleTimer=null;} han
 function armIdle(){ clearTimeout(idleTimer); idleTimer=setTimeout(()=>{
   if(!active) return;
   hang.classList.add('alert');
-  setStatus('응답이 없으시면 아래에 입력하시거나, 통화 종료를 눌러 주세요.', true);
+  setStatus('말씀하시려면 "🎤 말씀하기"를 눌러 주세요. 아래에 입력하셔도 됩니다.', true);
   typerow.classList.add('show');
-}, 12000); }
-function listen(){ if(!active) return; if(rec){ try{ setStatus('말씀하세요 🎙️'); rec.start(); armIdle(); }catch(e){} } else { typerow.classList.add('show'); setStatus('아래에 입력해 주세요'); armIdle(); } }
+  // 12초였습니다. 이제는 어르신이 버튼을 찾아 누르셔야 하므로 조금 더 기다립니다.
+}, 20000); }
+/**
+ * 어르신 차례 — Ieumi has finished speaking and is waiting.
+ *
+ * This is what used to be `listen()`, which opened the microphone by itself.
+ * Now it only *offers*: the buttons appear and nothing is recorded until the
+ * senior presses 말씀하기. Without a microphone at all, the typing row opens
+ * instead, which is also the fallback the idle timer falls back to.
+ */
+function readyForUser(){
+  if(!active) return;
+  stopListening();
+  actions.classList.add('show');
+  if(rec) setStatus('아래 초록 버튼을 누르고 말씀해 주세요');
+  else { typerow.classList.add('show'); setStatus('아래에 입력해 주세요'); }
+  armIdle();
+}
 
 // ---- 음성 출력 (스트리밍 파이프라인) ----
 // 어르신이 기다리는 시간을 줄이는 핵심입니다 (§3-6 ①②).
@@ -380,7 +452,7 @@ async function botTurn(){
     say('죄송해요, 지금은 대답하기 어려워요.');
     if(failed) setStatus('⚠ '+String(failed).slice(0,70), true);
     await enqueueSpeech('죄송해요, 지금은 대답하기 어려워요.');
-    if(active) listen();
+    if(active) readyForUser();
     return;
   }
 
@@ -396,13 +468,15 @@ async function botTurn(){
   if(meta && meta.job) pickedJob = meta.job;
 
   await pump.flush();          // 마지막 문장까지 재생이 끝나기를 기다립니다
-  if(offerSms){ setStatus('문자를 원하시면 "문자 받기"를 눌러도 돼요'); }
+  if(offerSms){ setStatus('문자를 원하시면 아래 "문자 받기"를 눌러 주세요'); }
   if(!active) return;
-  listen();
+  readyForUser();
 }
 async function onUser(text){
   if(!active) return;
   clearIdle();
+  stopListening();
+  actions.classList.remove('show');
   setStatus(''); typerow.classList.remove('show');
   history.push({role:'user',content:text});
   // 추가 문자 제안에 대한 응답 처리
@@ -444,7 +518,7 @@ $('#typein').addEventListener('keydown',e=>{ if(e.key==='Enter') $('#typebtn').c
 let phone='';
 const fmtp=p=>{let d=p;if(d.length>3&&d.length<=7)d=d.slice(0,3)+'-'+d.slice(3);else if(d.length>7)d=d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7,11);return d||'​';};
 function renderNum(){ num.textContent=fmtp(phone); }
-function openKeypad(){ phone=''; renderNum(); kpEntry.classList.remove('off'); kpConfirm.classList.add('off'); kpSent.classList.add('off'); kwrap.classList.remove('hidden'); smsBtn.style.display='none'; if(rec)try{rec.stop()}catch(e){} }
+function openKeypad(){ phone=''; renderNum(); kpEntry.classList.remove('off'); kpConfirm.classList.add('off'); kpSent.classList.add('off'); kwrap.classList.remove('hidden'); actions.classList.remove('show'); stopListening(); }
 async function openConfirm(){
   cnum.textContent=fmtp(phone);
   await lookupMember(phone);          // 복지관 명단에 이 번호가 있는지 서버에 확인
@@ -483,10 +557,16 @@ function showSentCard(title, content){
  * keys configured, a body the browser dictates would be an open relay.
  */
 async function requestSms(kind){
+  // 어르신이 아직 "이걸로 할게요"라고 고르지 않았어도, 안내한 자리가 <하나뿐>이면
+  // 그게 지금 이야기하던 자리입니다. 그때는 문의 전화번호가 들어간 일자리 문자를
+  // 보내드리는 게 맞습니다 — 요약만 가면 정작 필요한 번호가 빠집니다.
+  // 두 개 이상일 때는 고르지 않은 채 아무거나 보내지 않습니다. 예전에 하드코딩된
+  // 목록에서 JOBS[0]을 집어 보내던 것이 바로 그 실수였습니다.
+  const job = pickedJob || (JOBS.length === 1 ? JOBS[0] : null);
   const r = await fetch(API+'/sms',{method:'POST',headers:{'content-type':'application/json'},
     body:JSON.stringify({
       to:phone, c:CTOKEN, kind,
-      jobId: pickedJob ? pickedJob.id : undefined,
+      jobId: job ? job.id : undefined,
       serviceCode: lastServiceCode || undefined,
       summary: lastSummary || undefined,
     })});
@@ -508,18 +588,19 @@ async function doSend(){
   // 남은 자리가 없으면 묻지 않고 마무리합니다 — 예전에는 어떤 상담이든 "다른
   // 일자리"를 권했고, 대답해도 보낼 것이 없었습니다.
   const hasOther = JOBS.some(j=>!pickedJob||j.id!==pickedJob.id);
-  if(!hasOther){ listen(); return; }
+  if(!hasOther){ readyForUser(); return; }
   const fu='그리고 어르신이 찾으시는 일자리와 비슷하거나, 알려드릴 만한 다른 일자리가 또 있으면, 그것도 문자로 보내드릴까요?';
-  awaitingFollowup=true; history.push({role:'assistant',content:fu}); say(fu); await speak(fu); listen();
+  awaitingFollowup=true; history.push({role:'assistant',content:fu}); say(fu); await speak(fu); readyForUser();
 }
 kwrap.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)return; const a=b.dataset.act;
   if(a==='cyes'){ doSend(); return; }
-  if(a==='sdone'){ kwrap.classList.add('hidden'); kpSent.classList.add('off'); return; }
+  if(a==='sdone'){ kwrap.classList.add('hidden'); kpSent.classList.add('off'); readyForUser(); return; }
   if(a==='cno'){ phone=''; renderNum(); kpConfirm.classList.add('off'); kpEntry.classList.remove('off'); speak('네, 다시 눌러 주세요.'); return; }
   if(a==='del'){ phone=phone.slice(0,-1); return renderNum(); }
   if(a==='send'){ if(phone.length<10){ num.textContent='번호를 확인해 주세요'; return; } openConfirm(); return; }
   if(phone.length<11){ phone+=b.textContent.trim(); renderNum(); }});
 // 문자 받기 버튼 (음성 인식 안 돼도 항상 열 수 있게)
+talkBtn.addEventListener('click',()=>{ if(!active) return; listening ? stopListening() : startListening(); });
 smsBtn.addEventListener('click',()=>{ if(active) openKeypad(); });
 
 // ---- 시작/종료 ----
@@ -527,16 +608,16 @@ async function start(){
   active=true; history=[]; offerSms=false; pickedJob=null; awaitingFollowup=false;
   lastSummary=''; lastCategory=''; smsSent=false; memberInfo=null; phone='';
   lastServiceCode=''; lastServiceName='';
-  call.classList.remove('invite'); hang.classList.add('show'); smsBtn.style.display='none';
+  call.classList.remove('invite'); hang.classList.add('show'); actions.classList.remove('show');
   // 복지관 설정(이름·인사말·목소리)을 먼저 받아옵니다.
   const greet=(CTX.settings&&CTX.settings.greeting)
     || ('안녕하세요, 어르신. 저는 말벗 '+ieumiName()+'예요. 무엇을 도와드릴까요?');
   history.push({role:'assistant',content:greet}); say(greet);
-  await speak(greet); listen();
+  await speak(greet); readyForUser();
 }
 function end(){ active=false; clearIdle(); if(rec)try{rec.stop()}catch(e){} stopSpeech();
   fileRequest();                          // 통화 내용을 담당자 대시보드로 넘깁니다
-  call.classList.add('invite'); hang.classList.remove('show'); smsBtn.style.display='none'; typerow.classList.remove('show'); kwrap.classList.add('hidden');
+  call.classList.add('invite'); hang.classList.remove('show'); actions.classList.remove('show'); typerow.classList.remove('show'); kwrap.classList.add('hidden');
   setStatus(''); say('수화기를 들고<br/>아래 초록 버튼을<br/>눌러주세요.'); }
 call.addEventListener('click',()=>{ if(!active) start(); });
 $('#hangBtn').onclick=end;

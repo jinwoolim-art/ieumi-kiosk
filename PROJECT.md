@@ -283,6 +283,29 @@ passed to staff.
 The same client marks 건강·의료 as awaiting legal review; if that review comes back badly, turning
 this off has to be a checkbox a centre can reach, not a redeploy.
 
+## 6bb. Fixed after Play4's 2026-09-14 test
+
+- ✅ **Ieumi appeared to talk to itself after every answer.** Each turn ended by
+  reopening the microphone. In any room with noise the microphone heard that noise as a new
+  question, which was answered, which reopened the microphone — a loop, and it ran even when the
+  senior had typed rather than spoken. The model was replying exactly once; the loop was entirely
+  in the browser. **The microphone now opens only while the senior presses 🎤 말씀하기.** A loop
+  cannot form because nothing opens it automatically. Empty results, and results the browser
+  itself reports low confidence in, are also discarded — but *not* short ones: "네" and "예" are
+  one-character answers in Korean, so a character-count floor would throw away real replies.
+- ✅ **The SMS number pad could never be opened.** `smsBtn.style.display` was set to `'none'` in
+  three places and never set back, so the 📩 문자 받기 button did not exist on screen — while the
+  status line actively told the senior to press it. It also shared a position with the status
+  pill. Both buttons now sit in their own row, visible for the whole call.
+- ✅ **A text sent before the senior chose a posting lost the contact number.** With exactly one
+  posting on the table, that posting is now what gets texted, contact number included. With two or
+  more, nothing is assumed — picking one arbitrarily is the mistake §6c describes.
+
+> **Still open from that test: speech recognition quality.** The tester gave up and typed. This is
+> the browser's Web Speech API and the risk TESTING.md §5 has flagged from the start; it has now
+> been hit on a desk, before any elderly speaker or noisy hallway. The server already has a CLOVA
+> `/stt` endpoint wired as the alternative, and choosing it changes the latency budget (§3-6).
+
 ## 6c. Fixed since the client's first test
 
 - ✅ **A senior could be texted a job that does not exist.** The server built the prompt from real

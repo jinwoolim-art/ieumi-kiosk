@@ -173,17 +173,25 @@ The token in the URL is how the kiosk knows which centre it belongs to; there is
 nobody to log a kiosk in.
 
 10. Press the green phone button. Ieumi greets you **in the voice and with the
-    name you set in step 6**.
-11. Say — or type in the box at the bottom if the microphone is not available —
-    **"일자리 좀 알아봐 주세요"**. Ieumi offers a real posting from the centre's
-    own district.
+    name you set in step 6**. When it finishes speaking, two buttons appear:
+    **🎤 말씀하기** and **📩 문자 받기**.
+11. Press **🎤 말씀하기**, then say **"일자리 좀 알아봐 주세요"** — or type it in the
+    box if the microphone is not available. Ieumi offers a real posting from the
+    centre's own district.
+
+    **The microphone only opens while you press the button.** It used to reopen
+    by itself after every answer, and in any room with noise it heard that noise
+    as a new question, answered it, reopened, and looped — which is what looked
+    like Ieumi "talking to itself". Press again while it is listening to stop.
 12. Ask **"월급은 얼마예요?"**. It says it cannot know and points you at the
     contact number. That is correct: the source has no wage field, and making
     one up is the failure this is designed to avoid.
 13. Ask **"뭘 도와줄 수 있어요?"**. It names the services *this centre switched
     on in step 5*, top of the list first.
-14. Ask for a text message, enter a phone number from the roster (e.g.
-    `010-1234-3456`). It recognises the caller by name. Nothing is actually
+14. Press **📩 문자 받기** and enter a phone number from the roster (e.g.
+    `010-1234-3456`). It recognises the caller by name. *(That button was on
+    screen but permanently hidden until now — Ieumi would say "press 문자 받기"
+    and there was nothing to press.)* Nothing is actually
     sent — SMS keys are deliberately unset — the card on screen shows exactly
     what would go out.
 
