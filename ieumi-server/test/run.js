@@ -120,7 +120,7 @@ test('seed creates the tenant, the 3 roles and the split catalog', async () => {
   const common = await shim.one(`SELECT count(*)::int n FROM services WHERE scope = 'common'`);
   const local  = await shim.one(`SELECT count(*)::int n FROM services WHERE scope = 'center'`);
   assert.strictEqual(common.n + local.n, 60, 'all 60 services should be seeded');
-  assert.strictEqual(local.n, 7, 'the 7 Seocho-specific services should be center-scoped');
+  assert.strictEqual(local.n, 45, 'the client classifies 45 of them as Seocho-only (11 common + 4 of our own additions stay common)');
 
   const members = await shim.one('SELECT count(*)::int n FROM members');
   assert.strictEqual(members.n, 6);
@@ -223,13 +223,13 @@ test('master can create a second center, which inherits the common catalog', asy
 
   const inherited = await shim.one(
     'SELECT count(*)::int n FROM center_services WHERE center_id = $1', [centerB.id]);
-  assert.strictEqual(inherited.n, 53, 'the new center inherits the 53 common services');
+  assert.strictEqual(inherited.n, 15, 'the new center inherits only the 15 genuinely nationwide services');
 
   // …and must NOT see Seocho's own 7.
   const visible = await shim.one(
     `SELECT count(*)::int n FROM services s
       WHERE s.active AND (s.scope = 'common' OR s.center_id = $1)`, [centerB.id]);
-  assert.strictEqual(visible.n, 53, "a center must not see another center's own services");
+  assert.strictEqual(visible.n, 15, "a center must not see another center's own services");
 });
 
 test('a center admin cannot create a center', async () => {
@@ -341,7 +341,7 @@ test('changing a password invalidates that user\'s sessions', async () => {
 test('priority: enabling and ordering services persists, scoped to the center', async () => {
   const list = await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie });
   assert.strictEqual(list.statusCode, 200);
-  assert.strictEqual(list.body.services.length, 60, 'Seocho sees 53 common + its own 7');
+  assert.strictEqual(list.body.services.length, 60, 'Seocho sees 15 common + its own 45');
 
   const items = list.body.services.map((s, i) => ({ id: s.id, enabled: i < 3, sort_order: 59 - i }));
   const save = await call({ method: 'PUT', url: '/api/services/priority', cookie: S.admin.cookie, body: { items } });
@@ -977,7 +977,7 @@ test('import: a code already used by one centre cannot become nationwide', async
 
   assert.strictEqual(res.body.skipped, 1);
   assert.strictEqual(res.body.created, 0);
-  assert.ok(/전용 서비스로 등록/.test(res.body.detail.skipped[0].reason),
+  assert.ok(/전용 서비스/.test(res.body.detail.skipped[0].reason),
     'the reason names the centre that already owns the code');
 });
 
@@ -1048,6 +1048,257 @@ test('the kiosk prompt carries the organisation behind each service', async () =
   });
   assert.ok(sys.includes('담당기관: 휴일지킴이약국'), 'Ieumi can name a real organisation');
   assert.ok(!sys.includes('pharm114'), 'a URL is never read aloud — it goes by SMS instead');
+});
+
+// ================================================================ scope reclassification
+// The client's second file adds a `scope` field per row, because `org` showed
+// that most of the list is run by a Seocho-district body and must not be
+// inherited by 강서 as nationwide content.
+test('import: a file may reclassify nationwide content as one centre\'s own', async () => {
+  const before = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie }))
+    .body.services.find((s) => s.code === 's6');
+  assert.strictEqual(before.scope, 'common', 'starts life as nationwide content');
+
+  // Switch it on and order it first, so the move can be shown to preserve both.
+  await call({ method: 'PUT', url: '/api/services/priority', cookie: S.admin.cookie,
+    body: { items: [{ id: before.id, enabled: true, sort_order: 0 }] } });
+
+  const res = await call({ method: 'POST', url: '/api/services/import?center=' + S.admin.center.id,
+    cookie: S.master.cookie,
+    body: { items: [V03({ id: 's6', scope: 'center', org: '서울시 복지포털', sub: before.sub,
+                          description: before.description, keywords: before.keywords,
+                          category: before.category, update_method: 'scraping' })] } });
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(res.body.moved, 1, 'a scope change is reported as a move, not an update');
+  assert.strictEqual(res.body.detail.moved[0].from, '전국 공통');
+
+  const mine = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie }))
+    .body.services.find((s) => s.code === 's6');
+  assert.strictEqual(mine.scope, 'center', 'now belongs to this centre alone');
+  assert.strictEqual(mine.enabled, true, 'the move keeps the centre\'s own selection');
+  assert.strictEqual(mine.sort_order, 0, 'and its ordering');
+});
+
+test('import: reclassifying takes it away from the other centres', async () => {
+  const other = (await call({ method: 'GET', url: '/api/services?center=' + centerB.id,
+    cookie: S.master.cookie })).body.services;
+  assert.ok(!other.find((s) => s.code === 's6'),
+    '강서 must not inherit 서울시 복지포털 as its own — this is the point of the scope field');
+
+  const rows = await shim.one(
+    `SELECT count(*)::int n FROM center_services cs
+       JOIN services s ON s.id = cs.service_id
+      WHERE s.code = 's6' AND cs.center_id = $1`, [centerB.id]);
+  assert.strictEqual(rows.n, 0, 'the inherited row is gone, not merely hidden');
+});
+
+test('import: the preview says how many centres lose access, before writing', async () => {
+  const res = await call({ method: 'POST', url: '/api/services/import?center=' + S.admin.center.id,
+    cookie: S.master.cookie,
+    body: { dry_run: true, items: [V03({ id: 's5', scope: 'center' })] } });
+  assert.strictEqual(res.body.moved, 1);
+  assert.ok(res.body.centres_losing_access >= 1, 'the cost is stated up front');
+
+  const still = (await call({ method: 'GET', url: '/api/services?center=' + centerB.id,
+    cookie: S.master.cookie })).body.services.find((s) => s.code === 's5');
+  assert.ok(still, 'a dry run moves nothing');
+});
+
+test('import: a scope that was only defaulted never moves anything', async () => {
+  // The client's first file had no scope field at all. Reading its absence as
+  // "make everything nationwide" would silently strip every centre's own
+  // content — so only a scope the file states counts as an instruction.
+  const mine = await shim.one(`SELECT code FROM services WHERE scope = 'center' LIMIT 1`);
+  const res = await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
+    body: { dry_run: true, items: [V03({ id: mine.code })] } });
+  assert.strictEqual(res.body.moved, 0);
+  assert.strictEqual(res.body.skipped, 1);
+});
+
+test('TENANT BOUNDARY — a centre cannot reclassify nationwide content', async () => {
+  const common = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie }))
+    .body.services.find((s) => s.scope === 'common');
+  const res = await call({ method: 'POST', url: '/api/services/import', cookie: S.admin.cookie,
+    body: { items: [V03({ id: common.code, scope: 'center' })] } });
+
+  assert.strictEqual(res.body.moved, 0);
+  assert.strictEqual(res.body.skipped, 1);
+  assert.ok(/마스터에게 요청/.test(res.body.detail.skipped[0].reason),
+    'it says who can do this instead');
+
+  const after = (await call({ method: 'GET', url: '/api/services?center=' + centerB.id,
+    cookie: S.master.cookie })).body.services.find((s) => s.code === common.code);
+  assert.ok(after, 'the other centre still has it');
+});
+
+test('import: a rename is reported with the call history riding on it', async () => {
+  // s19 in the client's file is a different service from the s19 already stored
+  // (노인여가복지시설 안내 against 긴급복지지원). That is a legitimate edit to make,
+  // but it silently re-labels every call already filed under the code, so the
+  // preview has to say so rather than list it as one field among seven.
+  const filed = await shim.one(
+    `SELECT service_code AS code FROM requests WHERE service_code IS NOT NULL LIMIT 1`);
+  assert.ok(filed, 'a call must already be filed against some service for this to mean anything');
+  const svc = await shim.one('SELECT scope, sub FROM services WHERE code = $1', [filed.code]);
+
+  const res = await call({ method: 'POST', url: '/api/services/import?center=' + S.admin.center.id,
+    cookie: S.master.cookie,
+    body: { dry_run: true,
+            items: [V03({ id: filed.code, scope: svc.scope, sub: '완전히 다른 서비스' })] } });
+
+  const hit = res.body.detail.renamed.find((r) => r.code === filed.code);
+  assert.ok(hit, 'the rename is called out separately, not buried among the field diffs');
+  assert.strictEqual(hit.from, svc.sub);
+  assert.strictEqual(hit.to, '완전히 다른 서비스');
+  assert.ok(hit.requests >= 1, 'and how many filed calls are attached to the code');
+});
+
+test('import: a centre-scoped row needs a centre chosen first', async () => {
+  const res = await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
+    body: { dry_run: true, items: [V03({ id: 's950', scope: 'center' })] } });
+  assert.strictEqual(res.body.skipped, 1);
+  assert.ok(/복지관에 넣을지/.test(res.body.detail.skipped[0].reason));
+});
+
+test('import: the client\'s own V03+scope file splits the way they described', async () => {
+  const file = JSON.parse(fs.readFileSync(
+    path.join(__dirname, 'fixtures', 'services.v03-scoped.json'), 'utf8'));
+  const res = await call({ method: 'POST', url: '/api/services/import?center=' + S.admin.center.id,
+    cookie: S.master.cookie, body: { dry_run: true, items: file } });
+
+  assert.strictEqual(res.body.total, 50);
+  assert.strictEqual(res.body.scopes.common, 11, '11 nationwide, as the client counted');
+  assert.strictEqual(res.body.scopes.center, 39, 'and 39 Seocho-only');
+  assert.strictEqual(res.body.skipped, 0, 'every row is usable once scope is stated');
+});
+
+// ================================================================ 어르신이 말한 지역 (F2)
+// The client's stated next test: does Ieumi answer for the region the *user*
+// wants, not just the one the kiosk stands in.
+const jobsMod = require('../jobs');
+
+test('region: a district is recognised from what the senior said', async () => {
+  const vocab = [
+    { term: '강남구', sido: '서울', sigungu: '강남구' },
+    { term: '강남', sido: '서울', sigungu: '강남구' },
+    { term: '관악구', sido: '서울', sigungu: '관악구' },
+    { term: '서울', sido: '서울', sigungu: '' },
+  ].sort((a, b) => b.term.length - a.term.length);
+
+  const hit = jobsMod.detectRegion(
+    [{ role: 'assistant', content: '무엇을 도와드릴까요?' },
+     { role: 'user', content: '강남구에 일자리 있어요?' }], vocab);
+  assert.strictEqual(hit.sigungu, '강남구');
+
+  // 구 dropped — a senior says "강남" as often as "강남구".
+  assert.strictEqual(
+    jobsMod.detectRegion([{ role: 'user', content: '강남 쪽으로 알아봐 주세요' }], vocab).sigungu,
+    '강남구');
+});
+
+test('region: the most recent one wins, so a senior may change their mind', async () => {
+  const vocab = [
+    { term: '강남구', sido: '서울', sigungu: '강남구' },
+    { term: '관악구', sido: '서울', sigungu: '관악구' },
+  ].sort((a, b) => b.term.length - a.term.length);
+
+  const hit = jobsMod.detectRegion([
+    { role: 'user', content: '강남구요' },
+    { role: 'assistant', content: '강남구 자리를 찾아볼게요.' },
+    { role: 'user', content: '아니 관악구로 해주세요' },
+  ], vocab);
+  assert.strictEqual(hit.sigungu, '관악구');
+});
+
+test('region: only what the senior said counts, never Ieumi\'s own words', async () => {
+  const vocab = [{ term: '강남구', sido: '서울', sigungu: '강남구' }];
+  const hit = jobsMod.detectRegion([
+    { role: 'assistant', content: '강남구에도 자리가 있어요.' },
+    { role: 'user', content: '네 알겠습니다' },
+  ], vocab);
+  assert.strictEqual(hit, null, 'Ieumi mentioning a district must not redirect the search');
+});
+
+test('region: a district nobody has postings for is not in the vocabulary', async () => {
+  // The vocabulary is built from the postings themselves, so a match can never
+  // promise a district and then produce nothing.
+  const vocab = [{ term: '강남구', sido: '서울', sigungu: '강남구' }];
+  assert.strictEqual(
+    jobsMod.detectRegion([{ role: 'user', content: '울릉군에 일자리 있나요?' }], vocab), null);
+});
+
+test('region: a stale vocabulary never makes a conversation wait', async () => {
+  // The DISTINCT over the postings table measures at ~2.5s against the real
+  // database. Awaiting it inside a turn would double time-to-first-audio the
+  // moment the cache expired, at random rather than consistently (§3-6).
+  await jobsMod.warmRegionVocabulary();
+
+  const t = Date.now();
+  const v = jobsMod.regionVocabulary();          // deliberately not awaited
+  assert.ok(Array.isArray(v), 'a warm cache answers synchronously, not with a promise');
+  assert.ok(Date.now() - t < 50);
+
+  // Expiring it must still answer at once, with the refresh running behind.
+  process.env.JOBS_VOCAB_TTL_MS = '0';
+  const stale = jobsMod.regionVocabulary();
+  assert.ok(Array.isArray(stale) || typeof stale.then === 'function');
+  delete process.env.JOBS_VOCAB_TTL_MS;
+});
+
+test('the prompt tells Ieumi which region the list is for', async () => {
+  const { jobsSection } = require('../prompt');
+
+  const asked = jobsSection({ jobs: [{ gu: '서울 강남구', job: '청소' }], scope: 'asked',
+                              region: '서울 강남구', centerRegion: '서울특별시 서초구', asked: '강남구' });
+  assert.ok(/어르신이 말씀하신 '강남구'/.test(asked), 'the senior hears the district they named');
+
+  const wider = jobsSection({ jobs: [{ gu: '서울 관악구', job: '청소' }], scope: 'asked-wider',
+                              region: '서울', centerRegion: '서울특별시 서초구', asked: '강남구' });
+  assert.ok(/강남구.*열린 자리가 없어/.test(wider), 'an empty district is admitted, not covered up');
+
+  const none = jobsSection({ jobs: [], scope: 'asked-none', region: '서울 강남구',
+                             centerRegion: '서울특별시 서초구', asked: '강남구' });
+  assert.ok(/다른 지역 자리를 대신 내밀지 말고/.test(none),
+    'nothing in the asked district means say so, not substitute another');
+});
+
+// ================================================================ 일반 상식 답변 (F3)
+// The client asked for it in their first message: answer from the list first,
+// and from general knowledge where the list is silent.
+test('general answers: the list comes first, general knowledge second', async () => {
+  const sys = buildSystem({ ieumi_name: '이음이', center_name: '서초',
+    services: [{ code: 's1', category: '건강', sub: '야간진료', description: '약국', org: '휴일지킴이약국' }] });
+  assert.ok(/목록에 있으면 목록이 우선입니다/.test(sys));
+  assert.ok(/일반 상식은 짧게/.test(sys));
+});
+
+test('general answers: the specifics a senior would act on stay forbidden', async () => {
+  const sys = buildSystem({ ieumi_name: '이음이', center_name: '서초', services: [] });
+  for (const forbidden of ['전화번호, 주소, 기관 이름', '금액, 지원금 액수', '날짜, 신청 기간',
+                           '자격 판단', '병을 진단하거나']) {
+    assert.ok(sys.includes(forbidden), `the prompt must still rule out: ${forbidden}`);
+  }
+});
+
+test('general answers: a centre can switch it off', async () => {
+  const off = buildSystem({ ieumi_name: '이음이', center_name: '서초', general_answers: false, services: [] });
+  assert.ok(!/일반 상식은 짧게/.test(off));
+  assert.ok(/아는 척하지 말고/.test(off), 'switched off, it defers to staff instead');
+});
+
+test('general answers: the switch round-trips through settings', async () => {
+  const off = await call({ method: 'PATCH', url: '/api/settings', cookie: S.admin.cookie,
+    body: { general_answers: false } });
+  assert.strictEqual(off.statusCode, 200);
+  assert.strictEqual(off.body.settings.general_answers, false);
+
+  const ctx = await require('../kiosk-context').forToken(kioskA);
+  assert.strictEqual(ctx.general_answers, false,
+    'and reaches the kiosk — the settings save drops the cached copy');
+
+  const on = await call({ method: 'PATCH', url: '/api/settings', cookie: S.admin.cookie,
+    body: { general_answers: true } });
+  assert.strictEqual(on.body.settings.general_answers, true);
 });
 
 // ================================================================ 문자 (SMS)

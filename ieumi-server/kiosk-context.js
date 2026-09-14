@@ -23,6 +23,7 @@ const DEFAULT_PERSONA = {
 const SQL = `
   SELECT c.id AS center_id, c.name AS center_name, c.region,
          s.ieumi_name, s.tone, s.voice_speaker, s.voice_speed, s.chat_model,
+         s.general_answers,
          s.greeting, s.roster_check_on,
          COALESCE(svc.list, '[]'::json) AS services
     FROM centers c

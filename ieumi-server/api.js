@@ -427,9 +427,14 @@ async function listServices(req, res, user, url) {
 // running platform without a deploy (the client's V03 → V04 question).
 //
 // The file the client produces is the input format, verbatim: a JSON array of
-// {id, category, sub, description, keywords, update_method, org, link}. Our own
-// seed file uses shorter keys for the same fields, so both spellings are
+// {id, category, sub, description, keywords, update_method, org, link, scope}.
+// Our own seed file uses shorter keys for the same fields, so both spellings are
 // accepted and neither side has to reformat anything.
+//
+// `scope` answers the question the first import raised: `org` showed that most
+// of the list is run by a Seocho-district body, which must not be inherited by
+// 강서 as nationwide content. The client now classifies each row —
+// common (전국·서울 광역) or center (서초 전용) — and this honours it per row.
 const FIELD = {
   code: ['code', 'id'],
   category: ['category', 'cat'],
@@ -439,6 +444,7 @@ const FIELD = {
   org: ['org'],
   link: ['link', 'url'],
   update_method: ['update_method', 'method'],
+  scope: ['scope'],
 };
 const pickField = (row, names) => {
   for (const n of names) if (row[n] !== undefined && row[n] !== null) return row[n];
@@ -446,6 +452,7 @@ const pickField = (row, names) => {
 };
 
 const METHODS = ['manual', 'realtime_api', 'scraping'];
+const SCOPES = ['common', 'center'];
 const CODE_RE = /^[a-z0-9][a-z0-9_-]{0,39}$/i;
 
 /**
@@ -480,12 +487,18 @@ function normaliseServiceRow(raw, i) {
     return { error: { at, code, reason: `update_method는 ${METHODS.join(' / ')} 중 하나여야 합니다.` } };
   }
 
+  const scope = get('scope');
+  if (scope && !SCOPES.includes(scope)) {
+    return { error: { at, code, reason: `scope는 ${SCOPES.join(' / ')} 중 하나여야 합니다.` } };
+  }
+
   const row = { code };
   for (const k of ['category', 'sub', 'description', 'keywords', 'org', 'link']) {
     const v = get(k);
     if (v !== undefined) row[k] = v;
   }
   if (method) row.update_method = method;
+  if (scope) row.scope = scope;
   return { row };
 }
 
@@ -515,15 +528,21 @@ async function importServices(req, res, user, url) {
   if (!items) throw new HttpError(400, '가져올 목록이 없습니다.');
   if (items.length > 2000) throw new HttpError(413, '한 번에 2000개까지 가져올 수 있습니다.');
 
-  // Master maintains the nationwide catalogue; a centre maintains its own.
-  // The file cannot choose — that is the tenant boundary, and it is decided
-  // from the session, exactly like every other write here. Only the centre
-  // case needs a centre resolved; nationwide content belongs to no one centre.
-  const asCommon = user.role === 'master' && body.scope !== 'center';
-  const scope = asCommon ? 'common' : 'center';
-  const centerId = asCommon ? null : auth.requireCenter(user, url.searchParams.get('center'));
-  const owner = asCommon ? null : centerId;
   const dryRun = !!body.dry_run;
+  const isMaster = user.role === 'master';
+
+  // 어느 복지관의 자료인가 — the centre a centre-scoped row belongs to. A centre
+  // admin never gets to name another; master names one with ?center=. Nationwide
+  // rows belong to no centre and need none, so master may import a file of only
+  // common rows without selecting anything.
+  const centerId = isMaster
+    ? auth.resolveCenter(user, url.searchParams.get('center'))
+    : auth.requireCenter(user, url.searchParams.get('center'));
+  // A centre's import is its own content whatever the file or the body says, so
+  // the reported default has to say that too — otherwise the summary claims a
+  // scope the rows were never given.
+  const defaultScope = !isMaster ? 'center'
+    : (SCOPES.includes(body.scope) ? body.scope : 'common');
 
   const skipped = [];
   const rows = [];
@@ -535,137 +554,261 @@ async function importServices(req, res, user, url) {
       return skipped.push({ at: i + 1, code: row.code, reason: '파일 안에서 code가 중복됩니다.' });
     }
     seen.add(row.code);
-    row._at = i + 1;          // kept only to report a clash against the right line
+    row._at = i + 1;
+
+    // 범위는 파일이 제안하고, 권한이 결정합니다 (§3-3). A centre admin's import is
+    // always their own content however the file is labelled — otherwise a file
+    // would be a way to edit every centre's catalogue at once.
+    const want = isMaster ? (row.scope || defaultScope) : 'center';
+    row._scope = want;
+    row._owner = want === 'center' ? centerId : null;
+    if (want === 'center' && !centerId) {
+      return skipped.push({ at: row._at, code: row.code,
+        reason: '우리 복지관 전용(center) 항목입니다. 어느 복지관에 넣을지 먼저 선택해 주세요.' });
+    }
     rows.push(row);
   });
 
-  const existing = new Map((await db.all(
-    `SELECT code, category, sub, description, keywords, org, link, update_method
-       FROM services
-      WHERE scope = $1 AND center_id IS NOT DISTINCT FROM $2 AND code = ANY($3::text[])`,
-    [scope, owner, rows.map((r) => r.code)],
-  )).map((r) => [r.code, r]));
+  const codes = rows.map((r) => r.code);
 
-  // 같은 코드가 다른 범위에 이미 있으면 건너뜁니다.
-  //
-  // A centre's list is "everything common, plus everything of mine", so the same
-  // code living in both scopes shows the senior's own dashboard two rows with one
-  // name and hands the kiosk an ambiguous service_code. Real case: the seed put
-  // 서초's 긴급복지지원 at s19 because its text mentions 서초, and the client's file
-  // reuses s19 for 노인여가복지시설. Importing it as nationwide content would not
-  // have failed — it would have silently produced a duplicate. Refusing and
-  // naming the clash is the only outcome a person can act on.
-  const clash = new Map((await db.all(
-    `SELECT s.code, s.scope, c.name AS center_name
+  // Every stored row carrying one of these codes, in any scope — the move and
+  // the collision test below both need to see rows the target scope does not hold.
+  const stored = await db.all(
+    `SELECT s.id, s.code, s.scope, s.center_id, c.name AS center_name,
+            s.category, s.sub, s.description, s.keywords, s.org, s.link, s.update_method
        FROM services s
        LEFT JOIN centers c ON c.id = s.center_id
-      WHERE s.code = ANY($1::text[])
-        AND NOT (s.scope = $2 AND s.center_id IS NOT DISTINCT FROM $3)
-        AND (s.scope = 'common' OR s.center_id = COALESCE($3, s.center_id))`,
-    [rows.map((r) => r.code), scope, owner],
-  )).map((r) => [r.code, r]));
+      WHERE s.code = ANY($1::text[])`, [codes]);
 
-  const created = [], updated = [], unchanged = [], writable = [];
+  // 이름이 바뀌는 항목은 이력이 걸려 있습니다 — how many calls were already filed
+  // against each code, so a rename can be reported with its cost rather than as
+  // a routine field change.
+  const reqCount = new Map((await db.all(
+    `SELECT service_code AS code, count(*)::int AS n FROM requests
+      WHERE service_code = ANY($1::text[]) GROUP BY 1`, [codes],
+  )).map((r) => [r.code, r.n]));
+
+  const sameSlot = (r, row) => r.scope === row._scope
+    && (r.center_id || null) === (row._owner || null);
+
+  // Two rows with one code only matter where somebody would see both at once. A
+  // centre's list is "everything common, plus everything of mine", so a
+  // nationwide row collides with every centre's private row of the same code,
+  // while two different centres' private rows never meet.
+  const collides = (r, row) => !sameSlot(r, row)
+    && (row._scope === 'common' || r.scope === 'common' || r.center_id === row._owner);
+
+  // A move rewrites who owns a service, so three things must all hold.
+  //
+  // It is master's to make: a centre must not be able to pull nationwide content
+  // out of every other centre. The file must *say* the scope — a scope that was
+  // merely defaulted is an assumption, not an instruction, and a file with no
+  // scope field at all (the client's first version) must never silently
+  // reclassify anything. And no import hands one centre's private service to
+  // another; that is not a reclassification, it is a transfer.
+  const movable = (from, row) => isMaster
+    && !!row.scope
+    && !(from.scope === 'center' && row._scope === 'center');
+
+  const created = [], updated = [], unchanged = [], moved = [], renamed = [];
+  const toInsert = [], toUpdate = [], toMove = [];
+
   for (const row of rows) {
-    const other = clash.get(row.code);
-    if (other) {
+    const mine = stored.filter((r) => r.code === row.code);
+    const target = mine.find((r) => sameSlot(r, row));
+    const others = mine.filter((r) => collides(r, row));
+
+    if (others.length && (target || others.length > 1 || !movable(others[0], row))) {
+      const o = others[0];
       skipped.push({ at: row._at, code: row.code,
-        reason: other.scope === 'common'
-          ? '이 코드는 이미 전국 공통 서비스로 등록되어 있습니다. 다른 code를 쓰거나 마스터에게 수정을 요청하세요.'
-          : `이 코드는 이미 '${other.center_name}' 전용 서비스로 등록되어 있습니다. 다른 code를 써 주세요.` });
+        reason: target
+          ? `이 code가 두 곳에 있습니다 (${o.scope === 'common' ? '전국 공통' : o.center_name}). 먼저 정리해야 합니다.`
+          : o.scope === 'common'
+            ? '이 코드는 전국 공통 서비스입니다. 우리 복지관 전용으로 바꾸려면 마스터에게 요청하세요.'
+            : `이 코드는 '${o.center_name}' 전용 서비스입니다. 다른 code를 써 주세요.` });
       continue;
     }
-    writable.push(row);
-    const was = existing.get(row.code);
-    if (!was) { created.push(row.code); continue; }
+
+    const was = target || (others.length ? others[0] : null);
+    const isMove = !target && !!was;
+
     const changes = IMPORTABLE
-      .filter((k) => row[k] !== undefined && row[k] !== was[k])
+      .filter((k) => row[k] !== undefined && was && row[k] !== was[k])
       .map((k) => ({ field: k, from: was[k], to: row[k] }));
-    (changes.length ? updated : unchanged).push(
-      changes.length ? { code: row.code, changes } : row.code);
+
+    if (!was) {
+      created.push(row.code);
+      toInsert.push(row);
+    } else if (isMove) {
+      moved.push({ code: row.code,
+                   from: was.scope === 'common' ? '전국 공통' : was.center_name,
+                   to: row._scope === 'common' ? '전국 공통' : '이 복지관 전용',
+                   changes });
+      toMove.push({ ...row, _id: was.id });
+    } else if (changes.length) {
+      updated.push({ code: row.code, changes });
+      toUpdate.push({ ...row, _id: was.id });
+    } else {
+      unchanged.push(row.code);
+    }
+
+    // A changed 사업명 is the one edit that can quietly turn a code into a
+    // different service — the client's s19 (긴급복지지원 → 노인여가복지시설) does
+    // exactly that, and any call already filed under s19 silently re-labels.
+    if (was && row.sub !== undefined && row.sub !== was.sub) {
+      renamed.push({ code: row.code, from: was.sub, to: row.sub,
+                     requests: reqCount.get(row.code) || 0 });
+    }
   }
 
+  // Moving nationwide content into one centre takes it away from the others.
+  // Nobody should discover that after pressing the button.
+  const centresLosing = toMove.some((m) => m._scope === 'center')
+    ? (await db.one('SELECT count(*)::int n FROM centers WHERE active AND id <> $1', [centerId])).n
+    : 0;
+
   const summary = {
-    scope,
+    scope: defaultScope,
+    scopes: { common: rows.filter((r) => r._scope === 'common').length,
+              center: rows.filter((r) => r._scope === 'center').length },
     dry_run: dryRun,
     total: items.length,
     created: created.length,
     updated: updated.length,
+    moved: moved.length,
     unchanged: unchanged.length,
     skipped: skipped.length,
-    detail: { created, updated, skipped },
+    centres_losing_access: centresLosing,
+    detail: { created, updated, moved, renamed, skipped },
   };
-  if (dryRun || !writable.length) return send(res, 200, summary);
+
+  if (dryRun || !(toInsert.length || toUpdate.length || toMove.length)) {
+    return send(res, 200, summary);
+  }
 
   // Resolve each row against what is already stored *before* writing, so a file
   // that omits a column leaves that column alone. Doing this in SQL would mean
   // COALESCE against `excluded`, and `excluded` cannot carry a NULL through a
   // NOT NULL column — the omission would arrive as '' and quietly blank the
-  // existing value. The comparison above already loaded every row this needs.
+  // existing value.
   const DEFAULTS = { update_method: 'manual' };
-  const final = writable.map((row) => {
-    const was = existing.get(row.code) || {};
-    const out = { code: row.code };
+  const byId = new Map(stored.map((r) => [r.id, r]));
+  const fill = (row) => {
+    const was = (row._id && byId.get(row._id)) || {};
+    const out = { code: row.code, _id: row._id, _scope: row._scope, _owner: row._owner };
     for (const k of IMPORTABLE) {
       out[k] = row[k] !== undefined ? row[k]
              : was[k] !== undefined ? was[k]
              : (DEFAULTS[k] || '');
     }
     return out;
-  });
-
-  // One statement per field set rather than one per row: the same reason
-  // savePriority batches, and this runs against a database an ocean away.
-  const conflict = asCommon
-    ? `(code) WHERE scope = 'common'`
-    : `(center_id, code) WHERE scope = 'center'`;
+  };
+  const ins = toInsert.map(fill);
+  const upd = [...toUpdate, ...toMove].map(fill);
+  const col = (list, k) => list.map((r) => r[k]);
 
   await db.tx(async (c) => {
-    await c.query(
-      `INSERT INTO services (code, scope, center_id, category, sub, description,
-                             keywords, org, link, update_method)
-       SELECT x.code, $1, $2, x.category, x.sub, x.description,
-              x.keywords, x.org, x.link, x.update_method
-         FROM unnest($3::text[], $4::text[], $5::text[], $6::text[],
-                     $7::text[], $8::text[], $9::text[], $10::text[])
-           AS x(code, category, sub, description, keywords, org, link, update_method)
-       ON CONFLICT ${conflict}
-       DO UPDATE SET category      = excluded.category,
-                     sub           = excluded.sub,
-                     description   = excluded.description,
-                     keywords      = excluded.keywords,
-                     org           = excluded.org,
-                     link          = excluded.link,
-                     update_method = excluded.update_method,
-                     updated_at    = now()`,
-      [scope, owner, final.map((r) => r.code),
-       ...IMPORTABLE.map((k) => final.map((r) => r[k]))],
-    );
+    if (ins.length) {
+      await c.query(
+        `INSERT INTO services (code, scope, center_id, category, sub, description,
+                               keywords, org, link, update_method)
+         SELECT x.code, x.scope, x.center_id::uuid, x.category, x.sub, x.description,
+                x.keywords, x.org, x.link, x.update_method
+           FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[],
+                       $7::text[], $8::text[], $9::text[], $10::text[])
+             AS x(code, scope, center_id, category, sub, description,
+                  keywords, org, link, update_method)`,
+        [col(ins, 'code'), col(ins, '_scope'), col(ins, '_owner'),
+         ...IMPORTABLE.map((k) => col(ins, k))]);
+    }
 
-    // A brand-new service needs a center_services row or it cannot be ordered
-    // or switched on. Disabled by default — an import adds to what a centre may
+    // An update and a move are the same statement: a move simply also rewrites
+    // scope and owner. Doing it in place is what preserves the owning centre's
+    // enabled flag, ordering and overrides — those hang off services.id.
+    if (upd.length) {
+      await c.query(
+        `UPDATE services s
+            SET scope = x.scope, center_id = x.center_id::uuid,
+                category = x.category, sub = x.sub, description = x.description,
+                keywords = x.keywords, org = x.org, link = x.link,
+                update_method = x.update_method, updated_at = now()
+           FROM unnest($1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[],
+                       $7::text[], $8::text[], $9::text[], $10::text[])
+             AS x(id, scope, center_id, category, sub, description,
+                  keywords, org, link, update_method)
+          WHERE s.id = x.id`,
+        [col(upd, '_id'), col(upd, '_scope'), col(upd, '_owner'),
+         ...IMPORTABLE.map((k) => col(upd, k))]);
+    }
+
+    // ---- center_services has to follow a move, or the inheritance starts lying.
+    const intoCentre = toMove.filter((m) => m._scope === 'center').map((m) => m._id);
+    if (intoCentre.length) {
+      // Every other centre inherited this while it was nationwide. It belongs to
+      // one centre now, and dropping those rows is the entire point of the move.
+      await c.query(
+        `DELETE FROM center_services cs
+          USING unnest($1::uuid[]) AS x(service_id)
+          WHERE cs.service_id = x.service_id AND cs.center_id <> $2`,
+        [intoCentre, centerId]);
+      // The new owner normally already has its row, because it inherited too.
+      // This covers the case where it does not.
+      await c.query(
+        `INSERT INTO center_services (center_id, service_id, enabled, sort_order)
+         SELECT $2, x.service_id, false,
+                COALESCE((SELECT max(sort_order) + 1 FROM center_services WHERE center_id = $2), 0)
+           FROM unnest($1::uuid[]) AS x(service_id)
+         ON CONFLICT (center_id, service_id) DO NOTHING`,
+        [intoCentre, centerId]);
+    }
+
+    // Promoted to nationwide: every centre inherits it now, switched off.
+    const intoCommon = toMove.filter((m) => m._scope === 'common').map((m) => m._id);
+    if (intoCommon.length) {
+      await c.query(
+        `INSERT INTO center_services (center_id, service_id, enabled, sort_order)
+         SELECT ctr.id, x.service_id, false,
+                COALESCE((SELECT max(sort_order) + 1 FROM center_services WHERE center_id = ctr.id), 0)
+           FROM unnest($1::uuid[]) AS x(service_id)
+           CROSS JOIN centers ctr
+          WHERE ctr.active
+         ON CONFLICT (center_id, service_id) DO NOTHING`,
+        [intoCommon]);
+    }
+
+    // A brand-new service needs a center_services row or it cannot be ordered or
+    // switched on. Disabled by default — an import adds to what a centre may
     // offer, it never decides for the centre what it offers.
-    //
-    // Nationwide content lands in every centre, the way createCenter hands a new
-    // centre the whole common catalogue; a centre's own content lands only there.
-    if (created.length) {
+    const newCommon = ins.filter((r) => r._scope === 'common').map((r) => r.code);
+    const newOwn = ins.filter((r) => r._scope === 'center').map((r) => r.code);
+    if (newCommon.length) {
       await c.query(
         `INSERT INTO center_services (center_id, service_id, enabled, sort_order)
          SELECT ctr.id, s.id, false,
                 COALESCE((SELECT max(cs.sort_order) + 1
                             FROM center_services cs WHERE cs.center_id = ctr.id), 0)
                   + row_number() OVER (PARTITION BY ctr.id ORDER BY s.code)
+           FROM services s CROSS JOIN centers ctr
+          WHERE s.scope = 'common' AND s.code = ANY($1::text[]) AND ctr.active
+         ON CONFLICT (center_id, service_id) DO NOTHING`, [newCommon]);
+    }
+    if (newOwn.length) {
+      await c.query(
+        `INSERT INTO center_services (center_id, service_id, enabled, sort_order)
+         SELECT $1, s.id, false,
+                COALESCE((SELECT max(cs.sort_order) + 1
+                            FROM center_services cs WHERE cs.center_id = $1), 0)
+                  + row_number() OVER (ORDER BY s.code)
            FROM services s
-           JOIN centers ctr ON ($1::uuid IS NULL AND ctr.active) OR ctr.id = $1
-          WHERE s.scope = $2 AND s.center_id IS NOT DISTINCT FROM $3
-            AND s.code = ANY($4::text[])
-         ON CONFLICT (center_id, service_id) DO NOTHING`,
-        [centerId, scope, owner, created]);
+          WHERE s.scope = 'center' AND s.center_id = $1 AND s.code = ANY($2::text[])
+         ON CONFLICT (center_id, service_id) DO NOTHING`, [centerId, newOwn]);
     }
   });
 
-  // Common content reaches every centre, so every cached kiosk copy is stale.
-  asCommon ? kioskCache.bustAll() : kioskCache.bust(centerId);
+  // A move, or any nationwide edit, reaches every centre — so every cached kiosk
+  // copy is stale, not only this centre's.
+  const wide = rows.some((r) => r._scope === 'common') || toMove.length > 0;
+  wide ? kioskCache.bustAll() : kioskCache.bust(centerId);
   return send(res, 200, summary);
 }
 
@@ -811,6 +954,7 @@ async function updateSettings(req, res, user, url) {
     tone: (v) => (['warm', 'plain', 'cheerful'].includes(v) ? v : 'warm'),
     greeting: (v) => str(v, 500),
     roster_check_on: (v) => !!v,
+    general_answers: (v) => !!v,
     chat_model: (v) => str(v, 80) || null,
   };
 
@@ -971,7 +1115,8 @@ async function kioskContext(req, res, url) {
   if (!center) throw new HttpError(404, '등록되지 않은 키오스크입니다.');   // unknown kiosk
 
   const settings = await db.one(
-    `SELECT ieumi_name, voice_speaker, voice_speed, tone, greeting, roster_check_on
+    `SELECT ieumi_name, voice_speaker, voice_speed, tone, greeting, roster_check_on,
+            general_answers
        FROM center_settings WHERE center_id = $1`, [center.id]);
 
   const services = await db.all(

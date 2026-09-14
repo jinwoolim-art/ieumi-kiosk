@@ -9,11 +9,18 @@ const { hashPassword } = require('../auth');
 const SERVICES = require('./services.seed.json');
 const REQUESTS = require('./requests.seed.json');
 
-// The catalog as it stands today is one flat list. Anything naming 서초 (Seocho)
-// or 서리풀 (Seoripul, a Seocho programme) is genuinely local to that center;
-// the rest is nationwide-common content owned by master. This is §3-2 in
-// practice — a center inherits the common set and adds its own on top.
-const isSeochoLocal = (s) => /서초|서리풀/.test(`${s.desc}${s.kw}${s.sub}`);
+// 공통이냐 우리 복지관이냐 — §3-2 in practice: a center inherits the common set
+// and adds its own on top.
+//
+// This used to be guessed from the text: anything naming 서초 or 서리풀 was taken
+// to be local. Adding the client's `org` column showed how badly that read the
+// data — it saw one local service where 36 organisations are Seocho-district
+// bodies, so 강서 would have inherited 방배노인종합복지관 as nationwide content.
+// The client classifies each row itself now, and the seed follows the file.
+// A row with no scope falls back to the old rule so nothing silently flips.
+const isSeochoLocal = (s) => s.scope
+  ? s.scope === 'center'
+  : /서초|서리풀/.test(`${s.desc}${s.kw}${s.sub}`);
 
 const CENTER = {
   slug: env.SEED_CENTER_SLUG || 'seocho',

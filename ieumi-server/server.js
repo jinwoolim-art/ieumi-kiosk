@@ -86,8 +86,25 @@ const personaFor = (kioskToken) => kioskContext.forToken(kioskToken);
  * senior waits. `fallback` is whatever the page sent, used only when the kiosk
  * has no centre — the static demo — so that still works with no database.
  */
-async function jobsForCenter(persona, fallback) {
+async function jobsForCenter(persona, fallback, history) {
   const centerRegion = persona && persona.region;
+  try {
+    // 어르신이 지역을 말씀하셨으면 그 지역이 우선입니다.
+    //
+    // A senior standing in a Seocho kiosk may well be asking about 강남 — where a
+    // son lives, where the bus goes. Answering with the centre's own district
+    // regardless is the failure the client's next test is aimed at. The named
+    // district wins over the centre's whenever there is one.
+    const asked = jobs.detectRegion(history, await jobs.regionVocabulary());
+    if (asked) {
+      const found = await jobs.forRegion(asked);
+      return { jobs: found.jobs.map(jobs.toPromptJob), scope: found.scope,
+               region: found.region, centerRegion: centerRegion || '', asked: asked.said };
+    }
+  } catch (e) {
+    console.error('[jobs] region lookup failed:', e.message);
+  }
+
   if (centerRegion) {
     try {
       const found = await jobs.forCenterRegion(centerRegion);
@@ -333,7 +350,7 @@ const server = http.createServer(async (req, res) => {
       // The postings come from the database, scoped to the centre's own region —
       // not from whatever the browser sends. A kiosk opened without a token (the
       // static demo) still falls back to the list it was given.
-      const jobsInfo = await jobsForCenter(persona, jobs);
+      const jobsInfo = await jobsForCenter(persona, jobs, history);
 
       // Claude answers with a 1-based index into the service list we sent it —
       // an index it cannot get wrong the way it could invent a code. Resolve it
@@ -444,6 +461,14 @@ server.listen(PORT, async () => {
     console.log(`    (not set — the dashboards and login will not work; see README)`);
   } else {
     console.log(`  DB           ${await db.ping() ? '연결됨 connected' : '연결 실패 unreachable'}`);
+
+    // 지역 사전 미리 채우기 — the DISTINCT over the postings table takes a couple
+    // of seconds, and a conversation must never be the thing that pays for it
+    // (§3-6). Warming it here means it is ready before the first caller, and it
+    // refreshes in the background from then on.
+    jobs.warmRegionVocabulary()
+      .then((v) => console.log(`  지역 사전      ${v.length}개 지역 (job regions ready)`))
+      .catch(() => {});
   }
 });
 

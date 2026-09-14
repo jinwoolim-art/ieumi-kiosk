@@ -212,7 +212,9 @@ token in its URL.
 ### 🟨 P2 — expansion and operations
 
 - **Domain expansion** — beyond jobs to health & medical (Phase 1) → welfare → daily living. A data
-  source and response logic per category.
+  source and response logic per category. *(Partly done: every service now carries the organisation
+  that runs it and a link, so Ieumi can name a real body and text the address — see §10. Live data
+  behind the other categories is still the open part.)*
 - **Responsive (mobile ↔ kiosk)** — one codebase supporting both. (§3-7)
 - **Deployment** — deploy backend and app to the cloud; manage secrets.
 - **Request-handling loop** — kiosk creates a request → stored → staff handles it → status returned
@@ -222,7 +224,66 @@ token in its URL.
 
 ---
 
-## 6b. Fixed since the client's first test
+## 6a. Answering for the region the senior asked about
+
+> The client's stated goal for the next test: *"이음이가 사용자가 원하는 지역의 답변을 정확히 하는지"* —
+> whether Ieumi answers accurately for the region the **user** wants.
+
+Until now the job search used one region only: the centre's own. A senior standing in a Seocho kiosk
+asking about 강남 — where a son lives, where the bus goes — was answered with Seocho listings and no
+acknowledgement that they had asked for somewhere else.
+
+**The district a senior names now wins over the centre's.** Measured end to end against live data:
+*"제가 강남구에 사는데, 강남구 쪽에 일자리 있을까요?"* returns five real 강남구 postings, and Ieumi
+names the district back.
+
+Three decisions are worth knowing:
+
+- **The region is detected here, not by the model.** The reply is streamed, so anything the model
+  reports arrives *after* the answer it was supposed to shape — a region in the trailing JSON could
+  only help the turn after the one that needed it. A second model call to classify first would cost
+  about a second, which §3-6 says is the whole difference between a conversation and an awkward pause.
+- **The vocabulary is built from the postings themselves**, not from a list of Korean administrative
+  divisions — 161 terms on the current data. A district only becomes recognisable when there is
+  something to offer for it, so a match can never promise 강남구 and then produce nothing. Each
+  district is registered under its full name and its bare stem, because a senior says "강남" at least
+  as often as "강남구", and the longest match wins.
+- **Only what the senior said counts.** Ieumi mentioning a district in its own reply must not
+  redirect the next search. The scan runs newest-turn-first, so a senior may change their mind.
+
+When the named district is empty the prompt says so rather than quietly substituting another — that
+distinction (`asked` / `asked-wider` / `asked-none`) is what stops a senior being sent to the wrong
+side of the city.
+
+## 6b. Answering from general knowledge, within a boundary
+
+> The client, in their first message: *"답변이 리스트를 우선적으로 답변을하고 리스트에 없는경우
+> 범용적인 지식이 답변이 되어야합니다"* — answer from the list first; where the list is silent,
+> general knowledge should answer.
+
+The list still comes first. Beyond it, Ieumi may now answer from ordinary general knowledge — but
+only ever about **how something works**, never about **a particular fact of here and now**:
+
+| Allowed | Never, even as "general knowledge" |
+|---|---|
+| when medicine is usually taken, habits that help a cold, how to spot a voice-phishing call | phone numbers, addresses, organisation names not in the list |
+| | amounts, benefit sums, wages, fees |
+| | dates, application periods, opening hours |
+| | whether *this* senior qualifies for something |
+
+Those are exactly the things a senior would act on, and exactly what this data cannot vouch for.
+Health talk carries an extra rule: never diagnose, never suggest changing medication, and close with
+*"정확한 건 의사 선생님이나 보건소에 여쭤보세요"*.
+
+Verified against the live model: a question about a cold gets a short answer and a nudge to see a
+doctor; *"동사무소 전화번호 좀 알려줘요"* and *"기초연금은 한 달에 얼마나 나와요?"* are both declined and
+passed to staff.
+
+**It is a switch, not a constant** (`center_settings.general_answers`, default on — 🎙️ 이음이 설정).
+The same client marks 건강·의료 as awaiting legal review; if that review comes back badly, turning
+this off has to be a checkbox a centre can reach, not a redeploy.
+
+## 6c. Fixed since the client's first test
 
 - ✅ **A senior could be texted a job that does not exist.** The server built the prompt from real
   postings, so the model's `pick` was an index into *that* list — but the browser resolved it against
@@ -327,6 +388,7 @@ and each entry now carries the two fields that make it actionable:
 | `org` | the organisation that runs the service | Ieumi may **name it** — it is quoting a record, not guessing |
 | `link` | that organisation's web address | too long to read aloud; it travels **by SMS** instead |
 | `update_method` | `manual` / `realtime_api` / `scraping` | says which entries depend on code that can go stale silently |
+| `scope` | `common` / `center` | whether every centre inherits it, or it belongs to this one alone |
 
 ### How an updated list reaches a running platform
 
@@ -353,24 +415,45 @@ becomes nationwide content that every centre inherits at once; a centre admin's 
 centre only. A centre editing an *inherited* entry writes an **override** — the nationwide row is
 untouched and other centres never see the change.
 
-### Two codes in the client's V03 file are already taken
+### `scope` — who a service belongs to, decided by the data rather than guessed
 
-The seed classifies anything whose text mentions 서초/서리풀 as that centre's own content, so `s19`
-and `s43` already exist as **Seocho-private** services. The client's file reuses both codes for
-different services — their `s19` is 노인여가복지시설 안내 (senior leisure facilities), ours is
-긴급복지지원 (emergency welfare support).
+The first import classified content by reading the text: anything mentioning 서초 or 서리풀 was that
+centre's, everything else nationwide. Adding the client's `org` column showed how badly that read the
+data — it found **one** local service where **36 of the 50 organisations are Seocho-district bodies**
+(방배노인종합복지관, 서초구보건소, 서초구청 …). Left as nationwide content, 강서 would have inherited
+"Bangbae Senior Welfare Centre" as a national service, which is the inheritance model (§3-2) telling
+a lie.
 
-A centre's list is *"everything common, plus everything of mine"*, so the same code in both scopes
-would show two rows with one name and hand the kiosk an ambiguous `service_code`. The import
-**refuses those two rows and names the centre that already owns the code**, and applies the other 48.
-Resolving it needs a decision from the client, not a guess from us (§12).
+The client now classifies each row itself and the platform follows the file:
 
-> This also exposes a classification problem worth fixing before more centres exist: `org` reveals
-> that **36 of the client's 50 services are run by a Seocho-district organisation** (방배노인종합복지관,
-> 서초구보건소, 서초구청 …), while the text-only rule sees just one. Loaded as nationwide content,
-> 강서 would inherit "Bangbae Senior Welfare Centre" as a national service. The data also contains a
-> third tier the schema has no room for — Seoul-wide (TOPIS, 서울시 복지포털) sits between nationwide
-> and district.
+| `scope` | Count | What it means |
+|---|---|---|
+| `common` | 11 | nationwide or Seoul-wide — 복지로, 기상청, TOPIS, 노인일자리여기, 서울금융복지상담센터. Every centre inherits these. |
+| `center` | 39 | a Seocho body, branch or facility — including the local branches of national systems (서초50플러스센터, 서초고용복지+센터), because 강서 must not inherit a Seocho branch. |
+
+A row whose stored scope differs from the file's is a **move**, not an edit, and the import treats it
+as one:
+
+- It is done **in place** (`UPDATE services SET scope, center_id`), so the owning centre keeps its
+  selection, its ordering and its overrides — those hang off `services.id`.
+- Moving nationwide content into one centre **removes the inherited row from every other centre**.
+  That is the entire point, and the preview states how many centres lose access *before* the button.
+- **Only a scope the file states counts.** A defaulted scope never moves anything — reading the
+  absence of the field (the client's first file had none) as "make everything nationwide" would strip
+  every centre's own content in one press.
+- A move is **master's to make**. A centre admin cannot reclassify nationwide content, and no import
+  hands one centre's private service to another — that is a transfer, not a classification.
+
+### Renames are reported separately, with the history riding on them
+
+Changing `sub` is the one edit that can quietly turn a code into a different service. The client's
+`s19` does exactly that: ours was 긴급복지지원 (emergency welfare support), theirs is 노인여가복지시설
+안내 (senior leisure facilities). Every call already filed under that code silently re-labels, so the
+preview calls renames out on their own and says **how many requests are attached**.
+
+`s19` had none, so the client's version was applied and **긴급복지지원 was moved to `s61`** rather than
+being deleted — the client owns this catalogue's numbering, and nothing of ours had to be lost to
+honour it.
 
 ---
 

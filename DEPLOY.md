@@ -94,14 +94,19 @@ Render builds (`npm ci --omit=dev`), runs the migrations, then starts the
 server. The database already has its tables and seed data, so the migration step
 will report that everything is applied and move on — except
 `005_service_links.sql`, which adds the organisation and link columns the
-client's service list needs. It is additive (`ADD COLUMN IF NOT EXISTS`) and
-safe on a database already in use.
+client's service list needs, and `006_general_answers.sql`, which adds the
+per-centre switch for answering from general knowledge (default on). Both are
+additive (`ADD COLUMN IF NOT EXISTS`) and safe on a database already in use.
 
 > **The service data itself is not part of the migration.** Migrations create
-> columns; content arrives through the import screen (PROJECT.md §10). After the
-> first deploy, sign in as `master` → ⭐ 서비스 우선순위 → 📥 서비스 목록 가져오기,
-> upload the client's JSON, press 미리보기, then 반영하기. Expect **48 updated,
-> 2 skipped** — the two skips are the `s19`/`s43` code clash and are correct.
+> columns; content arrives through the import screen (PROJECT.md §10). A database
+> seeded fresh already has the client's list, scopes included. To bring an
+> **existing** database up to a newer file, sign in as `master`, select **서초** in
+> the header, then ⭐ 서비스 우선순위 → 📥 서비스 목록 가져오기, upload the JSON,
+> press 미리보기, read the amber warnings, then 반영하기.
+>
+> Selecting the centre first matters: rows marked `scope: "center"` need to know
+> which centre they belong to, and without one they are skipped and reported.
 
 ### 8. The nightly job sync
 

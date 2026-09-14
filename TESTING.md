@@ -97,14 +97,14 @@ one person needs it, or the client wants to poke at it on their own time.
      line, and why. Tab-separated works, and so does a reversed column order.
    - Type in the **찾기** box to filter a long roster by name or number.
 
-5. **⭐ 서비스 우선순위** — the ~60 services. Note the tags: **공통** are
+5. **⭐ 서비스 우선순위** — 60 services for 서초 (15 nationwide + 45 its own). Note the tags: **공통** are
    nationwide services managed by Play4, **우리 복지관** belong to Seocho alone.
    A centre inherits the common set and adds its own. Tick a few and reorder
    them with ▲▼; it saves as you go.
 
    Each entry now shows **🏢 the organisation that runs it and a link** — this is
    the client's V03 data — plus a badge saying how it is kept current
-   (**직접입력** manual / **실시간 API** / **스크래핑** scraping). Eleven entries
+   (**직접입력** manual / **실시간 API** / **스크래핑** scraping). Ten entries
    show **⚠ 담당기관·링크 없음** ("no organisation or link") in orange: those are
    services we added that the client's file does not cover, and Ieumi has nothing
    to text a senior about them yet.
@@ -127,10 +127,20 @@ one person needs it, or the client wants to poke at it on their own time.
    Sign in as `seocho-admin` and the same box says **서초 … 전용**: a centre can only
    ever write its own content. That is §3-3 visible before you press anything.
 
-   Two rows in the client's file are **refused**, by design: `s19` and `s43` are
-   already Seocho-private services under different names, and the message names
-   the centre that owns the code. See PROJECT.md §10 — it needs the client's
-   decision, not ours.
+   **Scope.** Each row says whether it is `common` (every centre inherits it) or
+   `center` (this centre alone). A row whose stored scope differs from the file's
+   is a **범위 이동** (a move), and the preview warns in amber — including
+   **how many other centres lose access**, because moving nationwide content into
+   one centre takes it away from the rest. That is intended: 강서 must not inherit
+   방배노인종합복지관.
+
+   Renames get their own amber warning, with **how many calls were already filed
+   against that code** — changing a service's name changes what the history means.
+
+   To see the split actually work, sign in as `master`, switch the header centre
+   to **강서**, and open ⭐ 서비스 우선순위. It now shows **15 services**, not 59 —
+   only the genuinely nationwide ones. Switch back to 서초 and it shows 60. Two
+   centres, one system, and no Seocho organisation leaking into 강서.
 
    **기관·링크 고치기** on any row edits the organisation and link. As
    `seocho-admin` on a **공통** service this writes an *override*: Seocho sees the
@@ -183,6 +193,33 @@ nobody to log a kiosk in.
     array, so a senior asking about a real posting was texted a fictional one
     with `월급 150만원` on it. The card is now the server's own message, echoed
     back — preview and actual cannot drift apart.
+
+12b. **Ask about a different district** — this is the client's stated next test.
+    Say **"제가 강남구에 사는데, 강남구 쪽에 일자리 있을까요?"** ("I live in Gangnam-gu,
+    are there jobs around there?"). Ieumi comes back with **real 강남구 postings**
+    and names the district. Before this, a Seocho kiosk answered with Seocho
+    listings no matter what you asked for.
+
+    "강남" without the 구 works too, and you can change your mind mid-call —
+    say 관악구 next and it follows. Ask for a district with no open postings and
+    it says so rather than quietly offering somewhere else.
+
+12c. **Ask something not in the service list.** Try
+    **"감기 걸렸을 때는 뭘 먹으면 좋아요?"** ("what should I eat when I have a
+    cold?"). Ieumi gives a short ordinary answer and tells you to see a doctor if
+    it does not improve — the client's *"where the list is silent, general
+    knowledge should answer"*.
+
+    Then try the boundary: **"동사무소 전화번호 좀 알려줘요"** and
+    **"기초연금은 한 달에 얼마나 나와요?"**. Both are declined and passed to
+    staff. Phone numbers, addresses, amounts, dates and eligibility are never
+    answered from general knowledge — they are facts about here and now that
+    this data cannot vouch for.
+
+    The switch is **🎙️ 이음이 설정 → "목록에 없는 질문에도 일반 상식으로 답하기"**.
+    Turn it off, ask the cold question again, and Ieumi defers to staff instead.
+    It exists because your own dashboard marks 건강·의료 as pending legal review —
+    if that comes back badly, this is a checkbox rather than a redeploy.
 
 14b. Now try the same thing **without a job**. Press 통화 종료, start a new call,
     and ask a health question — **"밤에 문 연 약국은 어디서 찾아요?"** ("where do I

@@ -246,6 +246,10 @@ async function sync({ log = () => {} } = {}) {
         WHERE id = 1`,
       [list.length, open.length, detailed]);
 
+    // A sync is the only thing that changes which districts have postings, so it
+    // is the only thing that needs to drop the region vocabulary.
+    forgetVocabulary();
+
     return { scanned: list.length, stored: open.length, detailed, pruned: pruned.rowCount };
   } catch (e) {
     await db.query('UPDATE job_sync_state SET finished_at = now(), error = $1 WHERE id = 1',
@@ -271,39 +275,146 @@ function normaliseSido(s) {
  * widening is the normal case, not an edge case — and the prompt already tells
  * Ieumi to say so honestly.
  */
+// to_date is formatted in SQL: the driver hands back a JS Date at local
+// midnight, which shifts the day either side of UTC when it is stringified.
+// Only regions the feed itself stated are used to place a job in a district.
+// A region inferred from the employer's address can be somewhere else entirely,
+// and Ieumi reads the place aloud to someone who may travel to it (migration 004).
+// Still open, as of today. A posting is only filtered for openness when it is
+// stored, so without this an expired one keeps being offered every day after
+// its deadline — which matters most once the sync runs unattended.
+const pickJobs = (where, params, limit = 6) => db.all(
+  `SELECT id, title, org, place, deadline, apply_method,
+          to_char(to_date, 'YYYY-MM-DD') AS to_date,
+          address, contact_phone, min_age, headcount
+     FROM jobs
+    WHERE region_source = 'api'
+      AND (to_date IS NULL OR to_date >= current_date)
+      AND ${where}
+    ORDER BY has_detail DESC, to_date DESC NULLS LAST
+    LIMIT ${Number(limit)}`, params);
+
 async function forCenterRegion(region, limit = 6) {
   const parts = String(region || '').trim().split(/\s+/);
   const sido = normaliseSido(parts[0]);
   const sigungu = parts.slice(1).join(' ');
 
-  // to_date is formatted in SQL: the driver hands back a JS Date at local
-  // midnight, which shifts the day either side of UTC when it is stringified.
-  // Only regions the feed itself stated are used to place a job in a district.
-  // A region inferred from the employer's address can be somewhere else entirely,
-  // and Ieumi reads the place aloud to someone who may travel to it (migration 004).
-  // Still open, as of today. A posting is only filtered for openness when it is
-  // stored, so without this an expired one keeps being offered every day after
-  // its deadline — which matters most once the sync runs unattended.
-  const pick = (where, params) => db.all(
-    `SELECT id, title, org, place, deadline, apply_method,
-            to_char(to_date, 'YYYY-MM-DD') AS to_date,
-            address, contact_phone, min_age, headcount
-       FROM jobs
-      WHERE region_source = 'api'
-        AND (to_date IS NULL OR to_date >= current_date)
-        AND ${where}
-      ORDER BY has_detail DESC, to_date DESC NULLS LAST
-      LIMIT ${Number(limit)}`, params);
-
   if (sido && sigungu) {
-    const local = await pick('sido = $1 AND sigungu = $2', [sido, sigungu]);
+    const local = await pickJobs('sido = $1 AND sigungu = $2', [sido, sigungu], limit);
     if (local.length) return { jobs: local, scope: 'sigungu', region: `${sido} ${sigungu}` };
   }
   if (sido) {
-    const wide = await pick('sido = $1', [sido]);
+    const wide = await pickJobs('sido = $1', [sido], limit);
     if (wide.length) return { jobs: wide, scope: 'sido', region: sido };
   }
   return { jobs: [], scope: 'none', region: region || '' };
+}
+
+// ============================================================ 어르신이 말한 지역
+// 지역 사전 — the districts we can actually answer for.
+//
+// Built from the postings themselves rather than from a hardcoded list of Korean
+// administrative divisions: a name only gets in if there is a live posting to
+// offer for it, so a match can never lead to "yes, 강남구" followed by nothing.
+// It changes only when the nightly sync runs, so it is cached.
+const VOCAB_TTL_MS = Number(process.env.JOBS_VOCAB_TTL_MS || 10 * 60_000);
+let vocabCache = { at: 0, value: null };
+let vocabLoading = null;
+
+/**
+ * 지역 사전 — never on the critical path.
+ *
+ * Measured against the real database, the DISTINCT over the postings table takes
+ * about 2.5 seconds. Awaiting that inside a conversation turn would double
+ * time-to-first-audio the moment the cache expired — precisely the stall §3-6 is
+ * about, and it would appear at random rather than consistently, which is worse.
+ *
+ * So this never makes a caller wait. A warm entry is returned even when stale,
+ * with the refresh running behind it; a cold cache returns nothing at all and
+ * fills in for the next turn. `warmRegionVocabulary()` at start-up means the
+ * cold case does not happen on a running server.
+ */
+function regionVocabulary() {
+  const fresh = vocabCache.value && Date.now() - vocabCache.at < VOCAB_TTL_MS;
+  if (!fresh && !vocabLoading) {
+    vocabLoading = loadVocabulary()
+      .catch((e) => { console.error('[jobs] region vocabulary failed:', e.message); return vocabCache.value; })
+      .finally(() => { vocabLoading = null; });
+  }
+  // A stale list is still a list of real districts; the only thing it can be
+  // wrong about is a district that opened or closed in the last few minutes.
+  return vocabCache.value || vocabLoading || [];
+}
+
+const warmRegionVocabulary = () => loadVocabulary().catch(() => []);
+
+async function loadVocabulary() {
+  const rows = await db.all(
+    `SELECT DISTINCT sido, sigungu FROM jobs
+      WHERE region_source = 'api' AND sido <> ''
+        AND (to_date IS NULL OR to_date >= current_date)`);
+
+  // Each district is registered under its full name and its bare stem, because
+  // a senior says "강남" at least as often as "강남구". Longest first, so
+  // "강남구" wins over "강남" and a two-word district is not cut in half.
+  const terms = [];
+  const add = (text, sido, sigungu) => {
+    const t = String(text || '').trim();
+    if (t.length >= 2) terms.push({ term: t, sido, sigungu });
+  };
+  for (const r of rows) {
+    if (r.sigungu) {
+      add(r.sigungu, r.sido, r.sigungu);
+      add(r.sigungu.replace(/(시|군|구)$/, ''), r.sido, r.sigungu);
+    }
+    add(r.sido, r.sido, '');
+  }
+  const seen = new Set();
+  const value = terms
+    .filter((t) => (seen.has(t.term) ? false : seen.add(t.term)))
+    .sort((a, b) => b.term.length - a.term.length);
+
+  vocabCache = { at: Date.now(), value };
+  return value;
+}
+
+const forgetVocabulary = () => { vocabCache = { at: 0, value: null }; vocabLoading = null; };
+
+/**
+ * 어르신이 말한 지역 찾기 — the district a senior named, if any.
+ *
+ * Done here rather than by asking the model, for two reasons. The reply is
+ * streamed, so anything the model reports arrives *after* the answer it was
+ * supposed to shape — a region in the trailing JSON could only help the turn
+ * after the one that needed it. And a second model call to classify first would
+ * cost about a second, which §3-6 says is the whole difference between a
+ * conversation and an awkward pause.
+ *
+ * Scans newest turn first so the senior can change their mind: "강남구요"
+ * followed later by "아니 관악구요" lands on 관악구.
+ */
+function detectRegion(history, vocab) {
+  const said = (history || []).filter((m) => m && m.role === 'user' && m.content);
+  for (let i = said.length - 1; i >= 0; i--) {
+    const text = String(said[i].content);
+    for (const t of vocab) {
+      if (text.includes(t.term)) return { sido: t.sido, sigungu: t.sigungu, said: t.term };
+    }
+  }
+  return null;
+}
+
+/** Postings for a district the senior named, widening to its province if empty. */
+async function forRegion({ sido, sigungu }, limit = 6) {
+  if (sigungu) {
+    const local = await pickJobs('sido = $1 AND sigungu = $2', [sido, sigungu], limit);
+    if (local.length) return { jobs: local, scope: 'asked', region: `${sido} ${sigungu}` };
+  }
+  const wide = await pickJobs('sido = $1', [sido], limit);
+  if (wide.length) {
+    return { jobs: wide, scope: sigungu ? 'asked-wider' : 'asked', region: sido };
+  }
+  return { jobs: [], scope: 'asked-none', region: sigungu ? `${sido} ${sigungu}` : sido };
 }
 
 /**
@@ -347,6 +458,7 @@ const byId = (id) => db.one(
      FROM jobs WHERE id = $1`, [String(id || '')]);
 
 module.exports = {
-  sync, forCenterRegion, toPromptJob, status, byId,
+  sync, forCenterRegion, forRegion, toPromptJob, status, byId,
+  regionVocabulary, warmRegionVocabulary, detectRegion, forgetVocabulary,
   normaliseSido, splitPlace, placeFromAddress, fetchList, KEY,
 };
