@@ -46,17 +46,19 @@ function smsLines(j) {
 async function smsContent(persona, { jobId, serviceCode, summary, kind } = {}, deps = jobs) {
   const head = `[${persona.center_name}] ${persona.ieumi_name}`;
 
-  if (jobId) {
-    const row = await deps.byId(jobId).catch(() => null);
-    if (row) {
-      const j = deps.toPromptJob(row);
-      return kind === 'followup'
-        ? `${head} 추가 안내\n아까 문의하신 자세한 내용입니다.\n${smsLines(j)}\n정확한 조건은 위 문의처에 확인해 주세요. 건강하세요!`
-        : `${head} 안내\n${smsLines(j)}`;
-    }
-    // An id that is not in the table produces no message rather than a message
-    // about nothing: an invented posting has to be unsendable.
-  }
+  // 일자리와 서비스는 서로를 밀어내지 않습니다 — 한 대화에서 둘 다 나왔으면
+  // 문자에도 둘 다 들어갑니다.
+  //
+  // This used to `return` as soon as a posting resolved, so a conversation that
+  // touched both a live posting and a catalogue entry sent the posting and threw
+  // the catalogue away — the organisation and link the client's list exists to
+  // provide, silently missing. The kiosk sends both identifiers on every send;
+  // they are two different things the senior asked about, not two candidates
+  // for one slot.
+  const row = jobId ? await deps.byId(jobId).catch(() => null) : null;
+  // An id the table does not know contributes nothing rather than a message
+  // about nothing: an invented posting has to stay unsendable.
+  const job = row ? deps.toPromptJob(row) : null;
 
   // The catalogue is the authority for org and link. A code the centre has not
   // switched on is not in persona.services and resolves to nothing.
@@ -65,15 +67,31 @@ async function smsContent(persona, { jobId, serviceCode, summary, kind } = {}, d
     : null;
 
   const clean = String(summary || '').replace(/\s+/g, ' ').trim().slice(0, 300);
-  if (!svc && !clean) return '';
+  if (!job && !svc && !clean) return '';
+
+  const followup = kind === 'followup';
+  const svcBlock = svc ? [
+    `▸ ${svc.sub}`,
+    clean,
+    svc.org ? `▸ 담당기관 ${svc.org}` : '',
+    svc.link ? `▸ 인터넷 ${svc.link}` : '',
+  ].filter(Boolean).join('\n') : '';
+
+  // 맺음말은 하나만 — whichever ending fits, never both.
+  const close = job && followup ? '정확한 조건은 위 문의처에 확인해 주세요. 건강하세요!'
+              : (svc || !job) ? '자세한 것은 담당 선생님께 전해드렸어요. 건강하세요!'
+              : '';
 
   return [
-    `${head} 안내`,
-    svc ? `▸ ${svc.sub}` : '',
-    clean,
-    svc && svc.org ? `▸ 담당기관 ${svc.org}` : '',
-    svc && svc.link ? `▸ 인터넷 ${svc.link}` : '',
-    '자세한 것은 담당 선생님께 전해드렸어요. 건강하세요!',
+    `${head} ${followup ? '추가 안내' : '안내'}`,
+    followup && job ? '아까 문의하신 자세한 내용입니다.' : '',
+    job ? smsLines(job) : '',
+    // 두 덩어리 사이는 한 줄 띄웁니다 — 어르신이 읽을 때 일자리 안내가 어디서
+    // 끝나고 서비스 안내가 어디서 시작하는지 보이게.
+    job && svcBlock ? '\n' + svcBlock : svcBlock,
+    // 일자리만 있을 때는 요약을 넣지 않습니다 — 위 항목이 이미 그 내용입니다.
+    !svc && !job ? clean : '',
+    close,
   ].filter(Boolean).join('\n');
 }
 

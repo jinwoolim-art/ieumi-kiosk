@@ -1480,6 +1480,27 @@ test('SMS: a welfare answer is sent with its organisation and link', async () =>
   assert.ok(out.includes('https://www.pharm114.or.kr/'), 'and so does the link (client V03)');
 });
 
+// 엑셀 목록과 실시간 자료는 한 문자 안에 같이 들어갑니다 — 클라이언트가 "하나를
+// 만들면 다른 하나가 안 된다"고 말한 그 증상입니다.
+test('SMS: a posting and a service from one conversation both reach the senior', async () => {
+  const out = await smsContent(PERSONA,
+    { jobId: 'real-1', serviceCode: 's1', summary: '일자리와 약국을 함께 여쭤보셨습니다.', kind: 'send' },
+    JOBSTUB);
+  assert.ok(out.includes('경로당 급식 도우미'), 'the live posting is there');
+  assert.ok(out.includes('02-586-0000'), 'with its phone number');
+  assert.ok(out.includes('응급 및 야간/휴일 진료'), 'and the catalogue entry is there too');
+  assert.ok(out.includes('휴일지킴이약국'), 'with the organisation the client supplied');
+  assert.ok(out.includes('https://www.pharm114.or.kr/'), 'and its link');
+});
+
+test('SMS: a posting on its own still sends only the posting', async () => {
+  const out = await smsContent(PERSONA,
+    { jobId: 'real-1', summary: '이 줄은 들어가지 않아야 합니다', kind: 'send' }, JOBSTUB);
+  assert.ok(out.includes('경로당 급식 도우미'));
+  assert.ok(!out.includes('응급 및 야간/휴일 진료'), 'nothing from the catalogue was asked about');
+  assert.ok(!out.includes('이 줄은 들어가지'), 'the posting lines already say it');
+});
+
 test('SMS: a service the centre has not enabled contributes nothing', async () => {
   const out = await smsContent(PERSONA, { serviceCode: 's999' }, JOBSTUB);
   assert.strictEqual(out, '', 'an unknown code must not produce a message about nothing');

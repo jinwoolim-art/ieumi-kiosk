@@ -253,6 +253,12 @@
         <b style="color:#15803d">공통</b> 표시는 전국 공통 서비스(마스터 관리),
         <b style="color:#b45309">우리 복지관</b> 표시는 이 복지관만의 서비스입니다.
       </p>
+      <p class="ph" style="margin:-4px 0 10px;padding:8px 10px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px">
+        <b>※ '실시간 API 예정' · '스크래핑 예정' 은 앞으로의 갱신 계획입니다 — 아직 연결되어 있지 않습니다.</b><br/>
+        지금 실시간으로 살아 있는 것은 <b>일자리 데이터</b> 하나뿐입니다.
+        나머지 서비스에서 이음이가 아는 것은 <b>이 화면에 적힌 글과 기관명·링크뿐</b>이고,
+        링크의 홈페이지 내용은 읽지 않습니다. 링크는 어르신께 <b>문자로 보내드릴 때</b> 쓰입니다.
+      </p>
 
       <!-- 서비스 목록 업데이트 (V03 → V04 …) -->
       <div class="imp" id="impBox">
@@ -784,7 +790,8 @@ function renderPrio() {
       // 담당기관·링크 — 이음이가 어르신께 실제로 안내하는 곳입니다 (클라이언트 V03).
       // 비어 있으면 눈에 띄게 표시합니다: 링크 없는 서비스는 문자로 보낼 것이 없습니다.
       const method = s.update_method || 'manual';
-      const mlabel = { manual: '직접입력', realtime_api: '실시간 API', scraping: '스크래핑' }[method] || method;
+      const mlabel = { manual: '직접입력', realtime_api: '실시간 API 예정',
+                       scraping: '스크래핑 예정' }[method] || method;
       const org = (s.org || '').trim(), link = (s.link || '').trim();
       const orgHtml = (org || link)
         ? '<div class="porg">🏢 ' + (esc(org) || '기관명 없음') +
