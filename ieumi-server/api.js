@@ -531,6 +531,13 @@ async function importServices(req, res, user, url) {
   const dryRun = !!body.dry_run;
   const isMaster = user.role === 'master';
 
+  // 가져온 서비스는 기본으로 켜집니다. A catalogue a centre authored is a statement
+  // about what it offers, so an import that leaves every row switched off blocks
+  // guidance entirely — the client hit exactly that, and from the kiosk it is
+  // indistinguishable from a matching failure. `enable: false` imports without
+  // touching a single switch, for a centre that wants to review first.
+  const enable = body.enable !== false;
+
   // 어느 복지관의 자료인가 — the centre a centre-scoped row belongs to. A centre
   // admin never gets to name another; master names one with ?center=. Nationwide
   // rows belong to no centre and need none, so master may import a file of only
@@ -610,7 +617,7 @@ async function importServices(req, res, user, url) {
     && !!row.scope
     && !(from.scope === 'center' && row._scope === 'center');
 
-  const created = [], updated = [], unchanged = [], moved = [], renamed = [];
+  const created = [], updated = [], unchanged = [], moved = [], renamed = [], applied = [];
   const toInsert = [], toUpdate = [], toMove = [];
 
   for (const row of rows) {
@@ -628,6 +635,11 @@ async function importServices(req, res, user, url) {
             : `이 코드는 '${o.center_name}' 전용 서비스입니다. 다른 code를 써 주세요.` });
       continue;
     }
+
+    // Past the guard: this row is going in. 변경이 없어도 포함됩니다 — an unchanged
+    // row still counts, because "already in the catalogue but switched off" is
+    // the state the client is trying to get out of.
+    applied.push(row.code);
 
     const was = target || (others.length ? others[0] : null);
     const isMove = !target && !!was;
@@ -667,6 +679,19 @@ async function importServices(req, res, user, url) {
     ? (await db.one('SELECT count(*)::int n FROM centers WHERE active AND id <> $1', [centerId])).n
     : 0;
 
+  // 지금 꺼져 있어 켜질 항목 — counted before the write so the preview can show it.
+  // A service already on is not reported: the number means switches that move.
+  const offNow = enable && applied.length
+    ? (await db.all(
+        `SELECT DISTINCT s.code
+           FROM center_services cs
+           JOIN services s ON s.id = cs.service_id
+          WHERE s.code = ANY($1::text[]) AND NOT cs.enabled
+            AND (s.scope = 'common' OR (s.center_id = $2 AND cs.center_id = $2))`,
+        [applied, centerId])).map((r) => r.code)
+    : [];
+  const willEnable = enable ? [...new Set([...created, ...offNow])] : [];
+
   const summary = {
     scope: defaultScope,
     scopes: { common: rows.filter((r) => r._scope === 'common').length,
@@ -677,12 +702,13 @@ async function importServices(req, res, user, url) {
     updated: updated.length,
     moved: moved.length,
     unchanged: unchanged.length,
+    enabled: willEnable.length,
     skipped: skipped.length,
     centres_losing_access: centresLosing,
-    detail: { created, updated, moved, renamed, skipped },
+    detail: { created, updated, moved, renamed, skipped, enabled: willEnable },
   };
 
-  if (dryRun || !(toInsert.length || toUpdate.length || toMove.length)) {
+  if (dryRun || !(toInsert.length || toUpdate.length || toMove.length || willEnable.length)) {
     return send(res, 200, summary);
   }
 
@@ -777,8 +803,9 @@ async function importServices(req, res, user, url) {
     }
 
     // A brand-new service needs a center_services row or it cannot be ordered or
-    // switched on. Disabled by default — an import adds to what a centre may
-    // offer, it never decides for the centre what it offers.
+    // switched on. Every insert in this transaction writes `false`; the single
+    // pass at the end is the only thing that turns a row on, so there is one
+    // rule and one place to read it.
     const newCommon = ins.filter((r) => r._scope === 'common').map((r) => r.code);
     const newOwn = ins.filter((r) => r._scope === 'center').map((r) => r.code);
     if (newCommon.length) {
@@ -803,11 +830,35 @@ async function importServices(req, res, user, url) {
           WHERE s.scope = 'center' AND s.center_id = $1 AND s.code = ANY($2::text[])
          ON CONFLICT (center_id, service_id) DO NOTHING`, [centerId, newOwn]);
     }
+
+    // ---- 그리고 켭니다 — after every row exists, in one statement.
+    //
+    // 범위를 따라갑니다: nationwide content switches on at every centre that
+    // inherits it, a centre's own content at that centre. That is what
+    // inheritance means — a centre holding 45 inherited services with none of
+    // them on has a kiosk that cannot answer anything.
+    //
+    // It reaches rows the file did not change, which is the point: re-importing
+    // the same file is how a centre that already imported into the dark gets
+    // out of it. The cost is that a service someone deliberately switched off
+    // comes back on, so the preview counts them and the dashboard offers the
+    // opt-out rather than deciding quietly.
+    if (enable && applied.length) {
+      await c.query(
+        `UPDATE center_services cs
+            SET enabled = true, updated_at = now()
+           FROM services s
+          WHERE cs.service_id = s.id
+            AND s.code = ANY($1::text[])
+            AND NOT cs.enabled
+            AND (s.scope = 'common' OR (s.center_id = $2 AND cs.center_id = $2))`,
+        [applied, centerId]);
+    }
   });
 
   // A move, or any nationwide edit, reaches every centre — so every cached kiosk
   // copy is stale, not only this centre's.
-  const wide = rows.some((r) => r._scope === 'common') || toMove.length > 0;
+  const wide = rows.some((r) => r._scope === 'common') || toMove.length > 0;  // incl. enabling
   wide ? kioskCache.bustAll() : kioskCache.bust(centerId);
   return send(res, 200, summary);
 }

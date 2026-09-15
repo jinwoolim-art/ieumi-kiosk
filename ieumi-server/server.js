@@ -71,7 +71,7 @@ function proxyFetch(url, opts = {}) {
 }
 const pfetch = (url, opts) => PROXY ? proxyFetch(url, opts) : fetch(url, opts);
 // 프롬프트 구성은 prompt.js 로, 문자 본문은 sms.js 로 분리했습니다 (테스트 가능하도록).
-const { DEFAULT_PERSONA, buildSystem, jobsSection, parseModelOutput } = require('./prompt');
+const { DEFAULT_PERSONA, systemBlocks, parseModelOutput } = require('./prompt');
 const { smsContent } = require('./sms');
 
 // A kiosk identifies its center with a token in its URL; without one the server
@@ -147,41 +147,54 @@ function toMessages(history) {
 // the request without it rather than failing the call.
 const THINKING_OFF = { type: 'disabled' };
 
-const chatBody = (history, jobsInfo, model, persona, stream, withThinking = true) => {
+const chatBody = (history, jobsInfo, model, persona, stream, opts = {}) => {
+  const { thinking = true, cache = true } = opts;
   const msgs = toMessages(history);
   if (!msgs.length) throw new Error('no user message yet');
   return JSON.stringify({
     model: model || MODEL,
     max_tokens: 400,
-    system: buildSystem(persona) + jobsSection(jobsInfo),
+    system: systemBlocks(persona, jobsInfo, { cache }),
     messages: msgs,
-    ...(withThinking ? { thinking: THINKING_OFF } : {}),
+    ...(thinking ? { thinking: THINKING_OFF } : {}),
     ...(stream ? { stream: true } : {}),
   });
 };
 const CLAUDE_HEADERS = {
   'x-api-key': AKEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json',
 };
-const rejectedThinking = (status, detail) =>
-  status === 400 && /thinking/i.test(String(detail || ''));
+/**
+ * 거절당한 기능만 빼고 다시 보냅니다 — drop one rejected feature and retry.
+ *
+ * A model that will not take `thinking`, or an account that will not take
+ * `cache_control`, must cost us that feature and never the conversation. Each
+ * flag only ever goes off, so this cannot loop.
+ */
+const degrade = (status, detail, opts) => {
+  if (status !== 400) return null;
+  const d = String(detail || '');
+  if (/thinking/i.test(d) && opts.thinking !== false) return { ...opts, thinking: false };
+  if (/cache/i.test(d) && opts.cache !== false) return { ...opts, cache: false };
+  return null;
+};
 
 async function callClaude(history, jobsInfo, model, persona) {
-  let r = await pfetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST', headers: CLAUDE_HEADERS,
-    body: chatBody(history, jobsInfo, model, persona, false),
-  });
-  let j = await r.json();
-  if (j.error && rejectedThinking(r.status, j.error.message)) {
-    r = await pfetch('https://api.anthropic.com/v1/messages', {
+  let opts = {};
+  for (;;) {
+    const r = await pfetch('https://api.anthropic.com/v1/messages', {
       method: 'POST', headers: CLAUDE_HEADERS,
-      body: chatBody(history, jobsInfo, model, persona, false, false),
+      body: chatBody(history, jobsInfo, model, persona, false, opts),
     });
-    j = await r.json();
+    const j = await r.json();
+    if (j.error) {
+      const next = degrade(r.status, j.error.message, opts);
+      if (next) { opts = next; continue; }
+      throw new Error(j.error.message || 'claude error');
+    }
+    const text = (j.content && j.content[0] && j.content[0].text) || '';
+    const { reply, meta } = parseModelOutput(text);
+    return { raw: text, parsed: { ...meta, reply }, usage: j.usage };
   }
-  if (j.error) throw new Error(j.error.message || 'claude error');
-  const text = (j.content && j.content[0] && j.content[0].text) || '';
-  const { reply, meta } = parseModelOutput(text);
-  return { raw: text, parsed: { ...meta, reply }, usage: j.usage };
 }
 
 /**
@@ -197,23 +210,21 @@ async function callClaude(history, jobsInfo, model, persona) {
 async function callClaudeStream(history, jobsInfo, model, persona, onText) {
   // Both transports expose an async-iterable body: WHATWG fetch a ReadableStream,
   // the proxy tunnel a Node IncomingMessage. The loop below reads either.
-  const open = (withThinking) => pfetch('https://api.anthropic.com/v1/messages', {
+  const open = (opts) => pfetch('https://api.anthropic.com/v1/messages', {
     method: 'POST', headers: CLAUDE_HEADERS, stream: true,
-    body: chatBody(history, jobsInfo, model, persona, true, withThinking),
+    body: chatBody(history, jobsInfo, model, persona, true, opts),
   });
 
-  let r = await open(true);
-  if (!r.ok) {
+  let opts = {};
+  let r = await open(opts);
+  while (!r.ok) {
     const detail = await r.text().catch(() => '');
-    if (!rejectedThinking(r.status, detail)) {
-      throw new Error('claude stream ' + r.status + ' ' + detail.slice(0, 200));
-    }
-    r = await open(false);
+    const next = degrade(r.status, detail, opts);
+    if (!next) throw new Error('claude stream ' + r.status + ' ' + detail.slice(0, 200));
+    opts = next;
+    r = await open(opts);
   }
-  if (!r.ok || !r.body) {
-    const detail = await r.text().catch(() => '');
-    throw new Error('claude stream ' + r.status + ' ' + detail.slice(0, 200));
-  }
+  if (!r.body) throw new Error('claude stream ' + r.status + ' (no body)');
 
   let acc = '';        // everything the model has written
   let sent = 0;        // how much of it we have handed to onText

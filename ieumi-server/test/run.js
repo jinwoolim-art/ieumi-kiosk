@@ -475,6 +475,48 @@ test('kiosk: a filed request lands in the right center and links the member', as
   assert.strictEqual(others.body.requests.length, 0);
 });
 
+// ================================================================ 프롬프트 캐싱 (§9)
+// Caching only pays if the cached half really is the half that stays still. The
+// two tests below are what stop a later edit from moving something per-turn into
+// the cached block, which would silently turn every cache hit into a miss.
+test('prompt caching: the per-turn jobs list stays outside the cached block', async () => {
+  const { systemBlocks } = require('../prompt');
+  const kioskCtx = require('../kiosk-context');
+  kioskCtx.bustAll();
+  const persona = await kioskCtx.forToken(kioskA);
+  const info = { jobs: [{ gu: '서초구', job: '경비', org: '한국시니어클럽' }], scope: 'center' };
+
+  const blocks = systemBlocks(persona, info);
+  assert.strictEqual(blocks.length, 2);
+  assert.deepStrictEqual(blocks[0].cache_control, { type: 'ephemeral' },
+    'the stable half is the cached prefix');
+  assert.strictEqual(blocks[1].cache_control, undefined,
+    'and nothing after it is cached, or every new question would be a cache miss');
+
+  assert.ok(blocks[0].text.includes(persona.services[0].sub), 'the catalogue is in the cached half');
+  assert.ok(!blocks[0].text.includes('한국시니어클럽'), 'the postings are not');
+  assert.ok(blocks[1].text.includes('한국시니어클럽'));
+});
+
+test('prompt caching: the cached half does not move between turns', async () => {
+  const { systemBlocks } = require('../prompt');
+  const kioskCtx = require('../kiosk-context');
+  kioskCtx.bustAll();
+  const persona = await kioskCtx.forToken(kioskA);
+
+  // 같은 복지관, 다른 질문 — the same centre, two different questions, which is
+  // what a real conversation looks like from the second turn onward.
+  const a = systemBlocks(persona, { jobs: [{ gu: '서초구', job: '경비' }], scope: 'center' });
+  const b = systemBlocks(persona, { jobs: [], scope: 'none', asked: '강남구' });
+  assert.strictEqual(a[0].text, b[0].text, 'byte-identical, or the cache never hits');
+  assert.notStrictEqual(a[1].text, b[1].text, 'while the part that should change, changes');
+
+  // 캐시를 못 쓰게 되어도 같은 프롬프트여야 합니다 — the fallback must be the same
+  // prompt, not a different one, or a degraded request quietly changes behaviour.
+  assert.strictEqual(systemBlocks(persona, { jobs: [], scope: 'none' }, { cache: false }),
+                     b[0].text + b[1].text);
+});
+
 test('the kiosk system prompt carries the centre\'s enabled services, in order', async () => {
   // §6-P1: the priority tool is only wired if what a centre selected actually
   // reaches the conversation.
@@ -934,7 +976,7 @@ test('import: a field the file omits is left alone', async () => {
   assert.strictEqual(s1.update_method, 'realtime_api');
 });
 
-test('import: a new service appears in every centre, switched off', async () => {
+test('import: a new service appears in every centre, switched on', async () => {
   const res = await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
     body: { items: [V03({ id: 's900', sub: '새 서비스', org: '새 기관', update_method: 'manual' })] } });
   assert.strictEqual(res.body.created, 1);
@@ -944,8 +986,78 @@ test('import: a new service appears in every centre, switched off', async () => 
     const list = (await call({ method: 'GET', url: '/api/services' + q, cookie })).body.services;
     const made = list.find((s) => s.code === 's900');
     assert.ok(made, `${label} inherits the new service`);
-    assert.strictEqual(made.enabled, false, `${label} decides for itself whether to offer it`);
+    assert.strictEqual(made.enabled, true,
+      `${label} can guide it straight away — an imported service that is off is invisible`);
   }
+});
+
+test('import: re-importing an unchanged file switches its services on', async () => {
+  // 클라이언트가 실제로 부딪힌 상황 — the file is already in the catalogue byte for
+  // byte, every row switched off, so the kiosk cannot guide any of it. Importing
+  // the same file again has to be the way out of that, or there is none.
+  const row = V03({ id: 's910', sub: '재가져오기 시험', org: '시험 기관' });
+  await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
+    body: { enable: false, items: [row] } });
+
+  const off = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie }))
+    .body.services.find((s) => s.code === 's910');
+  assert.strictEqual(off.enabled, false, 'enable:false really does leave a new service off');
+
+  const res = await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
+    body: { items: [row] } });
+  assert.strictEqual(res.body.updated, 0, 'nothing about the content changed');
+  assert.strictEqual(res.body.unchanged, 1);
+  assert.strictEqual(res.body.enabled, 1, 'but one switch moved, and it is reported');
+
+  const on = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie }))
+    .body.services.find((s) => s.code === 's910');
+  assert.strictEqual(on.enabled, true);
+});
+
+test('import: the preview counts the switches and writes none of them', async () => {
+  const row = V03({ id: 's911', sub: '미리보기 시험' });
+  await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
+    body: { enable: false, items: [row] } });
+
+  const res = await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
+    body: { dry_run: true, items: [row] } });
+  assert.strictEqual(res.body.enabled, 1);
+  assert.deepStrictEqual(res.body.detail.enabled, ['s911'], 'and says which');
+
+  const still = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie }))
+    .body.services.find((s) => s.code === 's911');
+  assert.strictEqual(still.enabled, false, 'a preview writes nothing, switches included');
+});
+
+test('import: enable:false moves no switch in either direction', async () => {
+  await call({ method: 'POST', url: '/api/services/import', cookie: S.master.cookie,
+    body: { enable: false,
+            items: [V03({ id: 's910', sub: '재가져오기 시험', org: '다른 기관' })] } });
+  const after = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie }))
+    .body.services.find((s) => s.code === 's910');
+  assert.strictEqual(after.enabled, true, 'importing without enabling never switches one off');
+  assert.strictEqual(after.org, '다른 기관', 'and the content still updates');
+});
+
+test("TENANT BOUNDARY — one centre's import never switches on another's service", async () => {
+  // 같은 code를 두 복지관이 각각 가질 수 있습니다 — a centre-scoped code is unique per
+  // centre, not globally, and the enable pass matches on codes. Matching on the
+  // code alone would let 강서's import reach into 서초.
+  const row = (id) => V03({ id, scope: 'center', sub: '같은 코드, 다른 복지관' });
+  for (const c of [S.admin.center.id, centerB.id]) {
+    await call({ method: 'POST', url: '/api/services/import?center=' + c, cookie: S.master.cookie,
+      body: { enable: false, items: [row('s920')] } });
+  }
+
+  await call({ method: 'POST', url: '/api/services/import?center=' + centerB.id,
+    cookie: S.master.cookie, body: { items: [row('s920')] } });
+
+  const here = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie }))
+    .body.services.find((s) => s.code === 's920');
+  const there = (await call({ method: 'GET', url: '/api/services?center=' + centerB.id,
+    cookie: S.master.cookie })).body.services.find((s) => s.code === 's920');
+  assert.strictEqual(there.enabled, true, 'the centre that imported has it on');
+  assert.strictEqual(here.enabled, false, 'the centre that did not is untouched');
 });
 
 test('import: bad rows are refused individually and reported', async () => {
@@ -1065,7 +1177,8 @@ test('import: a file may reclassify nationwide content as one centre\'s own', as
 
   const res = await call({ method: 'POST', url: '/api/services/import?center=' + S.admin.center.id,
     cookie: S.master.cookie,
-    body: { items: [V03({ id: 's6', scope: 'center', org: '서울시 복지포털', sub: before.sub,
+    body: { enable: false,
+            items: [V03({ id: 's6', scope: 'center', org: '서울시 복지포털', sub: before.sub,
                           description: before.description, keywords: before.keywords,
                           category: before.category, update_method: 'scraping' })] } });
   assert.strictEqual(res.statusCode, 200);
@@ -1170,6 +1283,22 @@ test('import: the client\'s own V03+scope file splits the way they described', a
   assert.strictEqual(res.body.scopes.common, 11, '11 nationwide, as the client counted');
   assert.strictEqual(res.body.scopes.center, 39, 'and 39 Seocho-only');
   assert.strictEqual(res.body.skipped, 0, 'every row is usable once scope is stated');
+});
+
+test("import: the client's own file lands switched on, and the kiosk can see it", async () => {
+  // 클라이언트의 수용 기준 그대로 — import their file, then ask the kiosk what it
+  // knows. Everything short of this passed while the kiosk still answered
+  // nothing, which is how the bug survived a round of testing.
+  const file = JSON.parse(fs.readFileSync(
+    path.join(__dirname, 'fixtures', 'services.v03-scoped.json'), 'utf8'));
+  const res = await call({ method: 'POST', url: '/api/services/import?center=' + S.admin.center.id,
+    cookie: S.master.cookie, body: { items: file } });
+  assert.strictEqual(res.statusCode, 200);
+
+  const ctx = await call({ method: 'GET', url: '/api/kiosk/context?c=' + kioskA });
+  const codes = new Set(ctx.body.services.map((s) => s.code));
+  const missing = file.map((r) => r.id).filter((id) => !codes.has(id));
+  assert.deepStrictEqual(missing, [], 'every service in their file reaches the kiosk');
 });
 
 // ================================================================ 어르신이 말한 지역 (F2)

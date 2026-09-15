@@ -173,4 +173,31 @@ function jobsSection({ jobs = [], scope = 'none', region = '', centerRegion = ''
   return `\n\n[일자리 목록]\n${jobsText(jobs)}${note}${caution}`;
 }
 
-module.exports = { TONE, DEFAULT_PERSONA, servicesText, buildSystem, JLABEL, jobsText, jobsSection, parseModelOutput };
+/**
+ * 시스템 프롬프트를 캐시 가능한 두 덩어리로 나눕니다 (PROJECT.md §9).
+ *
+ * The split is a line the design already had: buildSystem() is fixed for a
+ * centre until somebody changes the dashboard, and jobsSection() changes with
+ * every question a senior asks. Marking the boundary caches exactly the stable
+ * part and keeps the volatile part out of the cached prefix — putting them the
+ * other way round would invalidate the cache on every turn.
+ *
+ * 한 번의 대화만으로도 이득입니다: a cache write costs 1.25× a normal input token
+ * and a read 0.1×, so a greeting plus four questions costs 1.65× instead of
+ * 5.0× even if nobody else uses the kiosk all day. §9 deferred this while the
+ * prompt was ~1,100 tokens — under Sonnet's 1,024-token floor with no room to
+ * spare. Switching the client's own catalogue on took it to ~3,100.
+ *
+ * The concatenation is the same either way, so `cache: false` is a true
+ * fallback rather than a different prompt.
+ */
+function systemBlocks(persona, jobsInfo, { cache = true } = {}) {
+  const fixed = buildSystem(persona);      // 복지관마다 고정 — stable per centre
+  const perTurn = jobsSection(jobsInfo);   // 질문마다 달라짐 — new every turn
+  return cache
+    ? [{ type: 'text', text: fixed, cache_control: { type: 'ephemeral' } },
+       { type: 'text', text: perTurn }]
+    : fixed + perTurn;
+}
+
+module.exports = { TONE, DEFAULT_PERSONA, servicesText, buildSystem, systemBlocks, JLABEL, jobsText, jobsSection, parseModelOutput };

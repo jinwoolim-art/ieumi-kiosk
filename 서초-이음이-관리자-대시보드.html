@@ -269,6 +269,16 @@
         </div>
         <textarea id="impText" placeholder='[{"id":"s1","category":"건강 및 의료","sub":"응급 및 야간/휴일 진료","description":"…","keywords":"…","update_method":"realtime_api","org":"휴일지킴이약국","link":"https://www.pharm114.or.kr/"}]'></textarea>
         <div class="row">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155;cursor:pointer">
+            <input type="checkbox" id="impEnable" checked/>
+            가져온 서비스를 <b>바로 켜기</b>
+          </label>
+        </div>
+        <p class="d" style="margin:2px 0 0">
+          켜져 있어야 이음이가 그 서비스를 안내할 수 있습니다.
+          체크를 풀면 목록에만 추가되고, 어떤 항목도 켜거나 끄지 않습니다.
+        </p>
+        <div class="row">
           <button class="prev" id="impPreview">미리보기</button>
           <button class="go" id="impApply" disabled>반영하기</button>
         </div>
@@ -862,6 +872,11 @@ $('#impText').addEventListener('input', () => {
   impApply.disabled = true;
   impOut.classList.remove('show');
 });
+// 켜기 여부를 바꾸면 방금 본 미리보기는 더 이상 맞지 않습니다 — 다시 누르게 합니다.
+$('#impEnable').addEventListener('change', () => {
+  impApply.disabled = true;
+  impOut.classList.remove('show');
+});
 
 function readImportText() {
   const raw = $('#impText').value.trim();
@@ -878,7 +893,8 @@ function renderImport(r) {
   const line = (n, label, cls) => n ? '<span class="' + (cls || '') + '">' + label + ' <b>' + n + '</b>건</span>' : '';
   let html = '<div class="tot">' +
     [line(r.created, '새로 추가'), line(r.updated, '수정'), line(r.moved, '범위 이동', 'warn'),
-     line(r.unchanged, '변경 없음'), line(r.skipped, '건너뜀', 'bad')].filter(Boolean).join(' · ') +
+     line(r.enabled, '켜짐'), line(r.unchanged, '변경 없음'),
+     line(r.skipped, '건너뜀', 'bad')].filter(Boolean).join(' · ') +
     (r.dry_run ? ' <i>(미리보기 — 아직 반영되지 않았습니다)</i>' : ' <b>반영 완료</b>') + '</div>';
 
   if (r.scopes && (r.scopes.common || r.scopes.center)) {
@@ -921,8 +937,15 @@ function renderImport(r) {
       (r.detail.updated.length > 20 ? '<li>… 외 ' + (r.detail.updated.length - 20) + '건</li>' : '') + '</ul>';
   }
   if (r.detail.created.length) {
-    html += '<ul><li>새 서비스: <b>' + r.detail.created.map(esc).join(', ') + '</b>' +
-      ' — 추가된 뒤에는 <b>꺼진 상태</b>입니다. 위 목록에서 켜 주세요.</li></ul>';
+    html += '<ul><li>새 서비스: <b>' + r.detail.created.map(esc).join(', ') + '</b></li></ul>';
+  }
+  if (r.detail.enabled && r.detail.enabled.length) {
+    html += '<div style="font-size:12.5px;color:#475569;margin-top:4px">' +
+      '지금 꺼져 있어 <b style="color:#15803d">켜지는 서비스 ' + r.detail.enabled.length + '건</b>' +
+      ' — 이음이가 안내할 수 있게 됩니다.' +
+      '<br/><span style="color:#94a3b8">' + r.detail.enabled.slice(0, 40).map(esc).join(', ') +
+      (r.detail.enabled.length > 40 ? ' 외 ' + (r.detail.enabled.length - 40) + '건' : '') +
+      '</span></div>';
   }
   if (r.detail.skipped.length) {
     html += '<ul>' + r.detail.skipped.map(s =>
@@ -936,9 +959,10 @@ function renderImport(r) {
 $('#impPreview').onclick = async () => {
   try {
     impParsed = readImportText();
-    const r = await IeumiAPI.post('/api/services/import', { dry_run: true, items: impParsed });
+    const r = await IeumiAPI.post('/api/services/import',
+      { dry_run: true, enable: $('#impEnable').checked, items: impParsed });
     renderImport(r);
-    impApply.disabled = !(r.created || r.updated || r.moved);
+    impApply.disabled = !(r.created || r.updated || r.moved || r.enabled);
   } catch (e) { impApply.disabled = true; fail(e); }
 };
 
@@ -946,7 +970,8 @@ $('#impApply').onclick = async () => {
   if (!impParsed) return;
   impApply.disabled = true;
   try {
-    const r = await IeumiAPI.post('/api/services/import', { items: impParsed });
+    const r = await IeumiAPI.post('/api/services/import',
+      { enable: $('#impEnable').checked, items: impParsed });
     renderImport(r);
     await loadServices();
     toast('서비스 목록을 반영했습니다.');

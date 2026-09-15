@@ -112,8 +112,9 @@ async function seed(db) {
       );
       mine ? local++ : common++;
 
-      // Give the center a row per service so ordering survives; disabled by
-      // default, exactly like the planning tool behaves today.
+      // Give the center a row per service so ordering survives, switched on. A
+      // fresh install whose services are all off is indistinguishable from a
+      // broken kiosk — which is how the client first read it.
       const svc = (await c.query(
         `SELECT id FROM services
           WHERE code = $1 AND scope = $2 AND center_id IS NOT DISTINCT FROM $3`,
@@ -122,7 +123,7 @@ async function seed(db) {
 
       await c.query(
         `INSERT INTO center_services (center_id, service_id, enabled, sort_order)
-              VALUES ($1, $2, false, $3)
+              VALUES ($1, $2, true, $3)
          ON CONFLICT (center_id, service_id) DO NOTHING`,
         [center.id, svc.id, order++],
       );

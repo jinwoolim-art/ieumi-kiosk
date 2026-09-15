@@ -384,18 +384,41 @@ ieumi-kiosk/
 
 > `.env` is gitignored. **Never commit real keys.**
 
-### On prompt caching (§3-6 ④)
+### On prompt caching (§3-6 ④) — implemented 2026-09-15
 
-Measured, then deliberately not implemented. The system prompt is **1,554 tokens**. The minimum
-cacheable prefix is model-dependent, and for Haiku 4.5 it is **4,096 tokens** — well above what this
-prompt reaches, so a cache marker would silently do nothing (no error, just no cache). On
-`claude-sonnet-5` the minimum is 1,024, so caching *would* engage there; it is worth revisiting once
-the prompt grows — a centre enabling many more of its 59 services would push it past every
-threshold. Verify with `usage.cache_read_input_tokens` rather than assuming.
+This section previously said "measured, then deliberately not implemented", at **1,554 tokens** with
+a handful of services switched on. Switching the client's catalogue on (60 services) took the system
+prompt to **7,097 tokens**, which is past every threshold, so it is on now.
 
-Note also that the persona (name, centre, tone) currently sits at the **top** of the prompt, so no
-two centres share a prefix. If caching is turned on, move the invariant rules first and the
-per-centre persona last, or every centre pays for its own cache entry.
+Measured against the live API on `claude-sonnet-5`, the client's own catalogue:
+
+| | new input | cache write | cache read |
+|---|---|---|---|
+| no caching, every turn | 7,097 | 0 | 0 |
+| caching, first turn | 180 | 6,917 | 0 |
+| caching, every turn after | ~185 | 0 | 6,917 |
+
+A cache write costs 1.25× a normal input token and a read 0.1×, so **this pays for itself inside a
+single conversation** — a greeting plus four questions goes from 5.0× the prompt to 1.65×, with no
+reuse by anybody else. Once warm it is ~8× cheaper per turn. The 5-minute TTL means a quiet kiosk
+re-pays the write occasionally; that is still cheaper than not caching.
+
+**It is a cost measure, not a speed one.** Time to first token, 16 interleaved samples per condition:
+**1,606ms median without caching, 1,517ms with** — overlapping distributions, 22ms apart on the mean.
+Prompt size is not what makes Ieumi feel slow, and trimming the service list will not speed it up
+either. Verify with `usage.cache_read_input_tokens` rather than assuming.
+
+**One breakpoint, not two.** `systemBlocks()` in `prompt.js` caches everything `buildSystem()`
+produces — rules *and* per-centre persona and catalogue — and leaves `jobsSection()` outside it,
+because that changes with every question. This section used to advise the opposite: invariant rules
+first, persona last, so centres share a prefix. That was not done, and the reason is the arithmetic.
+Sharing the rules across centres saves ~1,000 tokens per centre and costs a rewrite of the Korean
+prompt text to lift `tone` and `region` out of the rules; caching the whole per-centre block saves
+6,917. Each centre paying for its own entry is the right trade at two centres, and probably at fifty.
+Revisit if the estimate ever becomes many centres each with traffic too sparse to keep a cache warm.
+
+If `cache_control` is ever rejected, `degrade()` in `server.js` retries without it and sends the
+identical prompt as one string — the fallback changes cost, never behaviour.
 
 ---
 
