@@ -10,7 +10,8 @@
     "seed": "node db/seed.js",
     "setup": "node db/migrate.js && node db/seed.js",
     "test": "node test/run.js",
-    "sync-jobs": "node db/sync-jobs.js"
+    "sync-jobs": "node db/sync-jobs.js",
+    "sync-sources": "node db/sync-sources.js"
   },
   "dependencies": {
     "pg": "^8.13.1"

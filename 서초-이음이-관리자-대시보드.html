@@ -113,7 +113,9 @@
   .psvc .pmain{flex:1;min-width:0}
   .psvc .pmain b{font-size:14px;color:#0f172a}
   .psvc .pdesc{font-size:12.5px;color:#475569;line-height:1.5;margin-top:2px}
-  .psvc .pkw{font-size:11.5px;color:#94a3b8;margin-top:2px}
+  .psvc .psrc{margin-top:4px;font-size:12.5px;color:#475569;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+    .psvc .alt{color:#94a3b8;font-weight:500;font-size:.92em}
+    .pkw{font-size:11.5px;color:#94a3b8;margin-top:2px}
   .psvc .pmv{display:flex;flex-direction:column;gap:3px}
   .psvc .pmv button{font-size:11px;line-height:1;padding:3px 7px;border:1px solid #cbd5e1;border-radius:5px;background:#fff;cursor:pointer}
   .psvc .pmv button:disabled{opacity:.3;cursor:default}
@@ -153,7 +155,7 @@
   <div class="lt"><span class="logo">이음이</span><h1 id="hdTitle">관리자(운영) 대시보드</h1></div>
   <div class="rt">
     <a href="서초-이음이-담당자-대시보드.html">담당자(상담) 대시보드 →</a>
-    <div class="userbar" id="ub"></div>
+    <div class="userbar" id="ub" data-nolang></div>
   </div>
 </header>
 
@@ -198,7 +200,7 @@
       <textarea id="bulk" placeholder="김순자, 010-1234-3456&#10;박영수, 010-2345-4567&#10;… 엑셀에서 복사해 붙여넣어도 됩니다"></textarea>
 
       <!-- 붙여넣은 내용을 등록 전에 미리 보여 줍니다 -->
-      <div id="pastePreview" class="preview" hidden></div>
+      <div id="pastePreview" data-nolang class="preview" hidden></div>
 
       <div class="inrow">
         <button class="bp" id="bulkBtn" disabled>일괄 등록</button>
@@ -212,7 +214,7 @@
       </div>
 
       <table><thead><tr><th style="width:40px">#</th><th>이름</th><th>전화번호</th><th style="width:70px"></th></tr></thead>
-      <tbody id="rows"></tbody></table>
+      <tbody id="rows" data-nolang></tbody></table>
       <p class="ph" style="margin-top:6px">※ 이름이나 번호를 눌러 바로 고칠 수 있습니다.
         <kbd>Enter</kbd> 저장, <kbd>Esc</kbd> 취소.</p>
       <div class="ok-note">✔ 여기 등록한 명단은 <b>담당자 대시보드</b>와 <b>이음이 키오스크</b>가 그대로 사용합니다.
@@ -260,6 +262,8 @@
         링크의 홈페이지 내용은 읽지 않습니다. 링크는 어르신께 <b>문자로 보내드릴 때</b> 쓰입니다.
       </p>
 
+      <p class="ph" id="prioSrc" style="margin:-4px 0 10px;padding:8px 10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px"></p>
+
       <!-- 서비스 목록 업데이트 (V03 → V04 …) -->
       <div class="imp" id="impBox">
         <h3>📥 서비스 목록 가져오기 / 업데이트</h3>
@@ -291,7 +295,7 @@
         <div class="impout" id="impOut"></div>
       </div>
 
-      <div id="prioList"></div>
+      <div id="prioList" data-nolang></div>
     </div>
   </div>
 
@@ -313,7 +317,7 @@
         우리 복지관에 안내되는 공고 <span class="cnt" id="jobCnt">-</span>
       </div>
       <table><thead><tr><th>공고</th><th style="width:110px">지역</th><th style="width:130px">문의</th><th style="width:100px">접수마감</th></tr></thead>
-      <tbody id="jobRows"></tbody></table>
+      <tbody id="jobRows" data-nolang></tbody></table>
       <p class="ph" style="margin-top:8px">
         ※ 이 자료에는 <b>급여·근무시간 정보가 없습니다</b> — 원본 API가 제공하지 않습니다.
         이음이는 급여를 지어내지 않고 문의처를 안내합니다.</p>
@@ -331,7 +335,7 @@
       </div>
       <div style="margin:14px 0 4px;font-weight:800;font-size:14px">업로드 목록 <span class="cnt" id="jCnt">0건</span></div>
       <table><thead><tr><th style="width:34px">#</th><th>제목</th><th style="width:64px">유형</th><th>내용/첨부</th><th style="width:100px">등록일</th><th style="width:56px"></th></tr></thead>
-      <tbody id="jRows"></tbody></table>
+      <tbody id="jRows" data-nolang></tbody></table>
     </div>
   </div>
 
@@ -426,7 +430,7 @@
         <button class="bp" id="uAdd">계정 추가</button>
       </div>
       <table><thead><tr><th>이름</th><th>아이디</th><th style="width:120px">권한</th><th style="width:150px">최근 로그인</th><th style="width:170px"></th></tr></thead>
-      <tbody id="uRows"></tbody></table>
+      <tbody id="uRows" data-nolang></tbody></table>
     </div>
   </div>
 
@@ -443,7 +447,7 @@
         <button class="bp" id="cAdd">복지관 추가</button>
       </div>
       <table><thead><tr><th>복지관</th><th style="width:110px">식별자</th><th>지역</th><th style="width:80px">회원</th><th style="width:80px">접수</th></tr></thead>
-      <tbody id="cRows"></tbody></table>
+      <tbody id="cRows" data-nolang></tbody></table>
     </div>
   </div>
 
@@ -452,7 +456,7 @@
     <div class="box">
       <h2><span class="material-symbols-outlined">insights</span> 통계 (요약)</h2>
       <p class="d">담당자 대시보드 접수 데이터를 요약합니다.</p>
-      <div id="statBox" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-top:6px"></div>
+      <div id="statBox" data-nolang style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-top:6px"></div>
       <p class="ph" style="margin-top:10px">※ 상세 접수 처리는 <a class="ext" href="서초-이음이-담당자-대시보드.html">담당자 대시보드</a>에서.</p>
     </div>
   </div>
@@ -789,24 +793,85 @@ function renderPrio() {
         : '<span style="font-size:11px;font-weight:800;color:#b45309">우리 복지관</span>';
       // 담당기관·링크 — 이음이가 어르신께 실제로 안내하는 곳입니다 (클라이언트 V03).
       // 비어 있으면 눈에 띄게 표시합니다: 링크 없는 서비스는 문자로 보낼 것이 없습니다.
+      // 영어 화면에서는 영어를 앞에, 한국어를 아래 회색으로 — 둘 다 보여야
+      // 클라이언트가 보는 화면과 맞춰 볼 수 있습니다.
+      //
+      // Under English the translation leads and the Korean sits under it in grey.
+      // Both are shown on purpose: the Korean is what the client sees and what
+      // any conversation with them will quote, so a tester needs to be able to
+      // line the two up. The English here is machine-translated and marked as
+      // such by being the secondary, lighter line in Korean mode.
+      const inEn = !!(window.I18N && window.I18N.lang === 'en');
+      // 한국어 화면에서는 영어를 숨깁니다 — 복지관 선생님께는 필요 없는 글자이고,
+      // 기계 번역이 원문 옆에 붙어 있으면 오히려 틀린 것처럼 보입니다.
+      //
+      // The pairing appears only in English mode. In Korean the staff see their
+      // own catalogue exactly as they wrote it: machine English sitting beside
+      // carefully written Korean reads as clutter at best and as an error at
+      // worst, and they are the ones who use this screen every day.
+      const both = (ko, en) => (inEn && en && en !== ko)
+        ? esc(en) + '<span class="alt"> · ' + esc(ko) + '</span>'
+        : esc(ko);
+
       const method = s.update_method || 'manual';
       const mlabel = { manual: '직접입력', realtime_api: '실시간 API 예정',
                        scraping: '스크래핑 예정' }[method] || method;
       const org = (s.org || '').trim(), link = (s.link || '').trim();
       const orgHtml = (org || link)
-        ? '<div class="porg">🏢 ' + (esc(org) || '기관명 없음') +
+        ? '<div class="porg">🏢 ' + (org ? both(org, s.org_en) : '기관명 없음') +
           (link ? ' · <a href="' + esc(link) + '" target="_blank" rel="noopener noreferrer">' + esc(link) + '</a>' : '') +
           '</div>'
         : '<div class="porg"><span class="none">⚠ 담당기관·링크 없음 — 문자로 보낼 안내가 없습니다</span></div>';
 
+      // 링크를 읽었는지 — 이 줄이 이음이가 구체적으로 답할 수 있는지를 결정합니다.
+      //
+      // 자료가 없으면 이음이는 "담당 선생님께 여쭤볼게요"밖에 못 합니다. 클라이언트가
+      // 화면만 보고는 그 차이를 알 수 없었고, 어르신이 물어본 뒤에야 드러났습니다.
+      // 이제 여기서 바로 보입니다.
+      //
+      // This line is the difference between Ieumi answering a question and
+      // deflecting it. Until now that difference was invisible from the screen
+      // and only surfaced when a senior asked and got nothing back.
+      // 이 줄은 목록 안에 있고, 목록은 data-nolang 입니다 — 사전이 건드리지 않습니다.
+      // 자료가 들어가는 자리라서 그렇게 표시해 두었고, 그래서 여기 UI 글자는
+      // 화면 언어를 보고 직접 골라야 합니다.
+      //
+      // This sits inside the catalogue list, which is marked data-nolang so 200
+      // service descriptions stay out of the UI dictionary. The consequence is
+      // that UI text rendered in here has to pick its own language, which the
+      // row already does for the catalogue fields.
+      const S = (inEn ? {
+        ok:      ['📄', 'page read', '#15803d'],
+        empty:   ['○',  'nothing usable on the page', '#b45309'],
+        error:   ['⚠',  'could not read', '#b91c1c'],
+        pending: ['…',  'waiting', '#64748b'],
+      } : {
+        ok:      ['📄', '자료 읽음', '#15803d'],
+        empty:   ['○',  '읽을 내용 없음', '#b45309'],
+        error:   ['⚠',  '못 읽음', '#b91c1c'],
+        pending: ['…',  '대기 중', '#64748b'],
+      })[s.source_status] || (link
+        ? ['–', inEn ? 'not read yet' : '아직 안 읽음', '#94a3b8'] : null);
+
+      const srcHtml = !S ? '' :
+        '<div class="psrc">' +
+          '<span style="color:' + S[2] + ';font-weight:700">' + S[0] + ' ' + S[1] + '</span>' +
+          (s.source_at ? ' <span class="alt">' + esc(s.source_at) + '</span>' : '') +
+          (s.source_chars ? ' <span class="alt">· ' + s.source_chars + (inEn ? ' chars' : '자') + '</span>' : '') +
+          (s.source_error ? ' <span class="alt">· ' + esc(s.source_error) + '</span>' : '') +
+          (link ? ' <button class="pedit" data-src="' + esc(s.id) + '">' + (inEn ? 'read it again now' : '지금 다시 읽기') + '</button>' : '') +
+          ((s.source_facts || s.source_facts_en)
+            ? ' <button class="pedit" data-facts="' + esc(s.id) + '">' + (inEn ? 'see what was read' : '내용 보기') + '</button>' : '') +
+        '</div>';
+
       html += '<div class="psvc' + (s.enabled ? ' on' : '') + '">' +
         '<label class="pchk"><input type="checkbox" data-on="' + esc(s.id) + '"' + (s.enabled ? ' checked' : '') + '/></label>' +
-        '<div class="pmain"><b>' + esc(s.sub) + '</b> ' + tag +
+        '<div class="pmain"><b>' + both(s.sub, s.sub_en) + '</b> ' + tag +
         '<span class="pm ' + esc(method) + '">' + esc(mlabel) + '</span>' +
         (s.overridden ? '<span class="pm manual">우리 복지관 수정</span>' : '') +
-        '<div class="pdesc">' + esc(s.description) + '</div>' +
-        orgHtml +
-        '<div class="pkw">🗣 ' + esc(s.keywords) +
+        '<div class="pdesc">' + both(s.description, s.description_en) + '</div>' +
+        orgHtml + srcHtml +
+        '<div class="pkw">🗣 ' + both(s.keywords, s.keywords_en) +
         ' <button class="pedit" data-ed="' + esc(s.id) + '">기관·링크 고치기</button></div></div>' +
         '<div class="pmv"><button data-mv="' + esc(s.id) + '|-1"' + (i === 0 ? ' disabled' : '') + '>▲</button>' +
         '<button data-mv="' + esc(s.id) + '|1"' + (i === list.length - 1 ? ' disabled' : '') + '>▼</button></div></div>';
@@ -815,6 +880,28 @@ function renderPrio() {
   }
   $('#prioList').innerHTML = html || '<p class="ph">서비스 목록이 비어 있습니다.</p>';
   $('#prioCnt').textContent = on + ' / ' + SERVICES.length + ' 선택됨';
+
+  // 켜진 서비스 중 몇 개가 실제로 답할 수 있는가 — 목록에서 가장 중요한 숫자입니다.
+  //
+  // "60개 켜짐"은 60개를 안내할 수 있다는 뜻이 아닙니다. 링크를 읽은 것만 금액·자격
+  // 같은 구체적인 답을 할 수 있고, 나머지는 기관 이름까지입니다. 그 차이가 지금까지
+  // 어디에도 보이지 않았습니다.
+  //
+  // "60 switched on" does not mean 60 can be answered. Only the services whose
+  // page has been read can give an amount or an eligibility rule; the rest can
+  // name the organisation and no more. That distinction had nowhere to show.
+  const live = SERVICES.filter((s) => s.enabled && s.source_status === 'ok').length;
+  const linked = SERVICES.filter((s) => s.enabled && (s.link || '').trim()).length;
+  const failed = SERVICES.filter((s) => s.enabled && s.source_status === 'error').length;
+  const note = $('#prioSrc');
+  if (note) {
+    note.innerHTML = '📄 <b>' + live + '</b>개 서비스는 홈페이지 내용까지 읽어 두어서 '
+      + '<b>금액·자격 같은 구체적인 질문에 답할 수 있습니다.</b> '
+      + '나머지는 기관 이름과 링크까지만 안내합니다.'
+      + (linked ? ' <span class="alt">(켜진 서비스 중 링크 있음 ' + linked + '개'
+          + (failed ? ', 읽지 못함 ' + failed + '개' : '') + ')</span>' : '')
+      + ' <span class="alt">— 매일 갱신하려면 <code>npm run sync-sources</code></span>';
+  }
 }
 
 // 순서 바꾸기 — 같은 카테고리 안에서만 이동합니다.
@@ -849,6 +936,58 @@ $('#prioSave').onclick = savePriority;
 // ---------------------------------------------- 기관·링크 고치기
 // 공통 서비스를 고치면 '우리 복지관'에만 적용되는 수정본이 됩니다 (§3-2).
 // 마스터가 고치면 전국 공통 원본이 바뀝니다.
+// 링크를 지금 다시 읽습니다 — 야간 동기화가 실패했을 때 하루를 기다리지 않도록.
+//
+// 한국 공공기관 서버는 느리고, 실패의 상당수는 그때만의 문제였습니다. 15~30초쯤
+// 걸리므로 버튼을 잠그고 무엇을 하는 중인지 적어 둡니다 — 반응이 없으면 두 번,
+// 세 번 누르게 되고 그때마다 같은 페이지를 다시 읽습니다.
+//
+// Refetching one link takes 15-30s on a slow government host. The button locks
+// and says what it is doing, because a button that looks idle gets pressed
+// again and each press re-reads the same page.
+async function refreshSource(id, btn) {
+  const was = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '읽는 중… (최대 30초)';
+  try {
+    const r = await IeumiAPI.post('/api/services/' + id + '/source', {});
+    const msg = { ok: '자료를 읽었습니다', empty: '읽을 만한 내용이 없습니다',
+                  error: '읽지 못했습니다', unchanged: '내용이 그대로입니다' }[r.status] || r.status;
+    toast(msg + (r.reason ? ' — ' + r.reason : ''));
+    await loadServices();
+  } catch (e) { fail(e); btn.disabled = false; btn.textContent = was; }
+}
+
+// 이음이가 실제로 들고 있는 문장을 그대로 보여 줍니다.
+// 요약이 틀렸는지 확인할 수 있는 곳은 여기뿐입니다 — 대화에서 이상한 답이 나온
+// 뒤에 원인을 찾는 것보다, 자료 자체를 읽어 보는 편이 빠릅니다.
+//
+// Show exactly the sentences Ieumi is working from. This is the only place the
+// extraction can be checked; reading the facts is faster than reverse-engineering
+// a strange answer out of a conversation.
+function showFacts(id) {
+  const s = (SERVICES || []).find((x) => x.id === id);
+  if (!s) return;
+  const inEn = !!(window.I18N && window.I18N.lang === 'en');
+  const text = (inEn && s.source_facts_en) || s.source_facts || '';
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.45);'
+    + 'display:flex;align-items:center;justify-content:center;padding:20px';
+  box.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:720px;width:100%;'
+    + 'max-height:80vh;overflow:auto;padding:18px 20px;box-shadow:0 12px 40px rgba(0,0,0,.28)">'
+    + '<div style="font-weight:800;margin-bottom:2px">' + esc(s.sub) + '</div>'
+    + '<div class="ph" style="margin-bottom:10px">' + esc(s.org || '') + ' · '
+    + esc(s.source_at || '') + ' 확인 · <a href="' + esc(s.link || '#')
+    + '" target="_blank" rel="noopener noreferrer">원본 열기</a></div>'
+    + '<pre style="white-space:pre-wrap;font:13.5px/1.65 system-ui,sans-serif;margin:0">'
+    + esc(text) + '</pre>'
+    + '<div style="text-align:right;margin-top:14px"><button class="bp" data-close="1">닫기</button></div></div>';
+  box.addEventListener('click', (e) => {
+    if (e.target === box || e.target.closest('[data-close]')) box.remove();
+  });
+  document.body.appendChild(box);
+}
+
 async function editServiceLink(id) {
   const s = SERVICES.find(x => x.id === id);
   if (!s) return;
@@ -988,6 +1127,10 @@ $('#impApply').onclick = async () => {
 document.addEventListener('click', e => {
   const ed = e.target.closest('[data-ed]');
   if (ed) { editServiceLink(ed.dataset.ed); return; }
+  const sr = e.target.closest('[data-src]');
+  if (sr) { refreshSource(sr.dataset.src, sr); return; }
+  const fx = e.target.closest('[data-facts]');
+  if (fx) { showFacts(fx.dataset.facts); return; }
   const mv = e.target.closest('[data-mv]');
   if (mv) { const p = mv.dataset.mv.split('|'); movePrio(p[0], +p[1]); return; }
   const al = e.target.closest('[data-all]');
@@ -1295,5 +1438,10 @@ async function boot() {
 boot().catch(e => { if (!/unauthenticated|forbidden/.test(e.message)) console.error(e); });
 
 </script>
+
+<!-- 언어 전환 (한국어 ⇄ English). 사전에 없는 문장은 한글로 남습니다.
+     Language switch. Load with ?lang=en, or ?i18n=debug to list gaps. -->
+<script src="i18n-en.js"></script>
+<script src="i18n.js"></script>
 </body>
 </html>

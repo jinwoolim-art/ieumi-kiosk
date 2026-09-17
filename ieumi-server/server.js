@@ -153,7 +153,17 @@ const chatBody = (history, jobsInfo, model, persona, stream, opts = {}) => {
   if (!msgs.length) throw new Error('no user message yet');
   return JSON.stringify({
     model: model || MODEL,
-    max_tokens: 400,
+    // 400 이었는데, 답이 길어지면 <문장 한가운데서 잘렸습니다.>
+    //
+    // 잘리면 두 가지가 한꺼번에 망가집니다: 어르신은 끝나지 않은 말을 들으시고,
+    // 맨 마지막 줄에 있어야 할 데이터 한 줄이 나오지 못해 담당자 대시보드는
+    // 이 통화가 어떤 서비스였는지 알지 못합니다. 실제로 그렇게 되는 것을
+    // 봤습니다 — 보이스피싱 질문에서 답이 "이상하다 싶으시면" 에서 끊겼습니다.
+    //
+    // max_tokens 는 상한일 뿐이라 짧은 답에는 한 푼도 더 들지 않습니다.
+    // Raising a ceiling costs nothing when the answers stay short; a reply cut
+    // mid-sentence costs the senior the answer and the dashboard its record.
+    max_tokens: 700,
     system: systemBlocks(persona, jobsInfo, { cache }),
     messages: msgs,
     ...(thinking ? { thinking: THINKING_OFF } : {}),
@@ -192,7 +202,7 @@ async function callClaude(history, jobsInfo, model, persona) {
       throw new Error(j.error.message || 'claude error');
     }
     const text = (j.content && j.content[0] && j.content[0].text) || '';
-    const { reply, meta } = parseModelOutput(text);
+    const { reply, meta } = parseModelOutput(text, { lang: persona && persona.lang });
     return { raw: text, parsed: { ...meta, reply }, usage: j.usage };
   }
 }
@@ -271,7 +281,7 @@ async function callClaudeStream(history, jobsInfo, model, persona, onText) {
     }
   }
 
-  const { reply, meta } = parseModelOutput(acc);
+  const { reply, meta } = parseModelOutput(acc, { lang: persona && persona.lang });
   // Whatever the parser recovered but streaming did not emit (a model that
   // ignored the format, say) still has to be spoken.
   if (reply.length > sent) onText(reply.slice(sent));
@@ -292,14 +302,25 @@ async function clovaTTS(text, speaker, speed) {
   return Buffer.from(await r.arrayBuffer());
 }
 
-async function clovaSTT(audioBuf) {
-  const r = await pfetch('https://naveropenapi.apigw.ntruss.com/recog/v1/stt?lang=Kor', {
+// 클로바 음성인식 — 이제 키오스크가 실제로 씁니다.
+//
+// 이 함수는 예전부터 있었지만 아무도 부르지 않았습니다. 키오스크는 브라우저
+// 내장 인식(webkitSpeechRecognition)을 썼고, 그것이 어르신 말씀을 자주 놓쳤습니다.
+// 클로바는 한국어 어르신 음성 인식률이 훨씬 높습니다 (클라이언트 요청).
+//
+// 보내는 소리는 16kHz 모노 WAV 입니다 — 브라우저 MediaRecorder 가 만드는
+// webm/opus 는 이 API 가 받지 않아서, 키오스크가 직접 WAV 로 만들어 보냅니다.
+async function clovaSTT(audioBuf, lang) {
+  if (!CID || !CSEC) throw new Error('STT 키 없음 (CLOVA keys not configured)');
+  // Kor / Eng — 화면 언어를 그대로 따릅니다. 그 밖의 값은 한국어로 봅니다.
+  const l = lang === 'en' || lang === 'Eng' ? 'Eng' : 'Kor';
+  const r = await pfetch('https://naveropenapi.apigw.ntruss.com/recog/v1/stt?lang=' + l, {
     method: 'POST',
     headers: { 'X-NCP-APIGW-API-KEY-ID': CID, 'X-NCP-APIGW-API-KEY': CSEC, 'Content-Type': 'application/octet-stream' },
     body: audioBuf,
   });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error('STT ' + r.status);
+  if (!r.ok) throw new Error('STT ' + r.status + ' ' + (j.errorMessage || ''));
   return j.text || '';
 }
 
@@ -332,7 +353,10 @@ async function sendSENS(to, content) {
 
 // Doubles as the allow-list for static serving: an extension that is not here
 // is not served at all. Add a type only when a page genuinely loads it.
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css',
+// charset 을 붙여야 합니다 — 사전 파일의 키가 한글이라, 인코딩을 명시하지 않으면
+// 브라우저가 다른 인코딩으로 읽어 키가 깨집니다.
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
   '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.webp': 'image/webp',
   '.woff': 'font/woff', '.woff2': 'font/woff2',
@@ -353,8 +377,12 @@ const server = http.createServer(async (req, res) => {
     if (await api.handle(req, res, u)) return;
 
     if (u.pathname === '/chat' && req.method === 'POST') {
-      const { history, jobs, model, c, stream } = JSON.parse((await readBody(req)).toString() || '{}');
-      const persona = await personaFor(c || u.searchParams.get('c'));
+      const { history, jobs, model, c, stream, lang } = JSON.parse((await readBody(req)).toString() || '{}');
+      // 언어는 키오스크가 알려 줍니다 — 복지관 설정이 아니라 지금 보고 있는 화면입니다.
+      // The language comes from the kiosk, not from the centre's settings: it is a
+      // property of who is standing in front of the screen right now.
+      const persona = { ...(await personaFor(c || u.searchParams.get('c'))),
+                        lang: lang === 'en' ? 'en' : 'ko' };
       const chosen = model || persona.chat_model;
 
       // 일자리는 서버가 이 복지관 지역으로 직접 찾습니다 (§6-P2).
@@ -418,8 +446,18 @@ const server = http.createServer(async (req, res) => {
       cors(res); res.writeHead(200, { 'content-type': 'audio/mpeg' }); return res.end(audio);
     }
     if (u.pathname === '/stt' && req.method === 'POST') {
-      const text = await clovaSTT(await readBody(req));
-      return json(res, 200, { text });
+      // 소리는 본문 그대로(WAV), 언어는 주소에 붙여서 옵니다 — 키오스크가 지금
+      // 보고 있는 화면의 언어입니다.
+      //
+      // 인식이 안 될 때 500 을 던지면 키오스크는 "연결 문제"라고만 말하게 됩니다.
+      // 어르신께는 "잘 못 들었어요, 다시 말씀해 주세요"가 맞는 말이므로, 실패도
+      // 200 으로 돌려주고 이유는 따로 담습니다.
+      try {
+        const text = await clovaSTT(await readBody(req), u.searchParams.get('lang'));
+        return json(res, 200, { text });
+      } catch (e) {
+        return json(res, 200, { text: '', error: String(e.message || e) });
+      }
     }
     if (u.pathname === '/sms' && req.method === 'POST') {
       const { to, jobId, serviceCode, summary, kind, c } =
@@ -441,6 +479,22 @@ const server = http.createServer(async (req, res) => {
     // ---- 정적 파일 ----
     let p = decodeURIComponent(u.pathname);
     if (p === '/') p = '/이음이-키오스크-프로토타입.html';
+
+    // 파일 이름이 한글이라 주소를 직접 입력하기 어렵습니다 — 짧은 영문 주소를 같이
+    // 받습니다. 파일 이름은 그대로 두었습니다: 복지관 담당자분들이 보시는 이름입니다.
+    //
+    // The pages are named in Korean, which is correct for the people who use them
+    // but makes the URL unusable for anyone who cannot type Hangul — including
+    // whoever is testing this. These aliases are the same files under an ASCII
+    // path; nothing is renamed or duplicated.
+    const ALIAS = {
+      '/login':     '/로그인.html',
+      '/admin':     '/서초-이음이-관리자-대시보드.html',
+      '/staff':     '/서초-이음이-담당자-대시보드.html',
+      '/kiosk':     '/이음이-키오스크-LIVE.html',
+      '/demo':      '/이음이-키오스크-프로토타입.html',
+    };
+    if (ALIAS[p.replace(/\/$/, '')]) p = ALIAS[p.replace(/\/$/, '')];
     const fp = path.resolve(ROOT, '.' + p);
     const rel = path.relative(ROOT, fp);
     const seg = rel.split(path.sep);

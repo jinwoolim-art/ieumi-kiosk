@@ -674,6 +674,60 @@ test('the prompt asks for speech first and data last', async () => {
     'the reply must not be asked for inside the JSON object — that is what blocked streaming');
 });
 
+// ================================================================ 뜻으로 알아듣기
+// 클라이언트 보고: "질문을 조금만 비틀면 답을 못 한다. 정확한 질문을 해야만
+// 답이 나온다." 원인은 프롬프트에 있었습니다 — 카탈로그의 '검색어'(keywords)
+// 칸이 데이터베이스와 kiosk-context 에는 있었는데 프롬프트에는 한 번도 실리지
+// 않았습니다. 목록에는 서비스의 공식 이름만 적혀 있었고, 어르신이 쓰시는 말은
+// 한 줄도 없었습니다.
+//
+// Reported by the client: twist the question and Ieumi stops answering. The
+// `keywords` column — the words seniors actually use — was in the database and
+// in the kiosk context but never rendered into the prompt, so the model only
+// ever saw each service's formal catalogue name.
+test('the words seniors actually use reach the prompt', async () => {
+  const p = buildSystem({
+    ieumi_name: '이음이',
+    services: [{ code: 's1', category: '건강 및 의료', sub: '응급 및 야간/휴일 진료',
+                 description: '주말/공휴일 당번 약국', org: '휴일지킴이약국',
+                 keywords: '야간 병원, 문 연 약국, 응급실' }],
+  });
+  assert.ok(p.includes('문 연 약국'),
+    'a senior asks for "a pharmacy that is open", not for "Emergency & Night/Holiday Care"');
+  assert.ok(p.includes('야간 병원') && p.includes('응급실'), 'every keyword travels, not just the first');
+  assert.ok(p.indexOf('응급 및 야간/휴일 진료') < p.indexOf('문 연 약국'),
+    'the keywords sit under their own service, so the model knows which row they belong to');
+
+  // 검색어가 비어 있는 줄은 ↳ 줄 자체가 붙지 않습니다 — 빈 꼬리표는 프롬프트만
+  // 늘리고 알려 주는 것이 없습니다.
+  const bare = buildSystem({ services: [{ code: 's9', category: '일상', sub: '버스 도착' }] });
+  assert.ok(!bare.includes('이렇게 물으셔도'), 'no keywords, no empty label');
+});
+
+test('english: the words are carried in English too', async () => {
+  const p = buildSystem({ lang: 'en', services: [
+    { code: 's1', category: '건강', category_en: 'Health', sub: '응급', sub_en: 'Emergency care',
+      description: '당번 약국', description_en: 'Duty pharmacies',
+      keywords: '문 연 약국', keywords_en: 'night hospital, open pharmacy, emergency room' }] });
+  assert.ok(p.includes('open pharmacy'), 'the English keywords are used on an English kiosk');
+  assert.ok(!p.includes('문 연 약국'), 'and the Korean ones are not repeated alongside them');
+});
+
+test('the prompt tells Ieumi to match on meaning, not on wording', async () => {
+  // 규칙이 없으면 목록만 늘어놓은 셈입니다. "글자가 다르면 모른다"고 답하던 것이
+  // 바로 클라이언트가 본 증상입니다.
+  const p = buildSystem({ services: [{ code: 's1', category: '건강', sub: '응급', description: 'x' }] });
+  assert.ok(p.includes('뜻이 같으면 같은 서비스입니다'),
+    'the rule has to say so in as many words');
+  assert.ok(/사투리/.test(p), 'dialect and roundabout phrasing are named as the same thing');
+  assert.ok(/셋 이상 늘어놓지 말고/.test(p),
+    'and a clarifying question is capped at two choices — a senior cannot hold a list by ear');
+
+  // 서비스가 하나도 없으면 이 규칙도 없습니다 — 고를 목록이 없으니까요.
+  const bare = buildSystem({ services: [] });
+  assert.ok(!bare.includes('뜻이 같으면 같은 서비스입니다'), 'no list, no matching rule');
+});
+
 test('the kiosk context cache is dropped when the dashboard changes it', async () => {
   const kioskCtx = require('../kiosk-context');
   const before = await kioskCtx.forToken(kioskA);
@@ -1403,8 +1457,12 @@ test('general answers: the list comes first, general knowledge second', async ()
 
 test('general answers: the specifics a senior would act on stay forbidden', async () => {
   const sys = buildSystem({ ieumi_name: '이음이', center_name: '서초', services: [] });
-  for (const forbidden of ['전화번호, 주소, 기관 이름', '금액, 지원금 액수', '날짜, 신청 기간',
-                           '자격 판단', '병을 진단하거나']) {
+  // 전화번호 규칙은 더 강해졌습니다 — 131·129 처럼 "맞아 보이는" 번호를 지어내는
+  // 것을 클라이언트 테스트에서 실제로 봤기 때문입니다.
+  // The phone rule got stricter after the client's test caught invented numbers
+  // that happened to be real (131, 129) — plausible is not the same as sourced.
+  for (const forbidden of ['머릿속에서 떠오른 번호는', '주소, 기관 이름', '금액, 지원금 액수',
+                           '날짜, 신청 기간', '자격 판단', '병을 진단하거나']) {
     assert.ok(sys.includes(forbidden), `the prompt must still rule out: ${forbidden}`);
   }
 });
@@ -1514,6 +1572,219 @@ test('SMS: nothing to say produces no message at all', async () => {
 test('SMS: a caller-supplied summary is capped', async () => {
   const out = await smsContent(PERSONA, { summary: 'ㅇ'.repeat(5000) }, JOBSTUB);
   assert.ok(out.length < 500, 'the one free-text field cannot become an arbitrary payload');
+});
+
+// ================================================================ 영어 모드 (1b)
+// 개발자가 한국어를 읽지 못하면 시험을 할 수 없고, 시험하지 못한 것은 클라이언트가
+// 처음 발견하게 됩니다. English mode exists so the system can be tested by
+// someone who cannot read the language it ships in.
+test('english: the catalogue is rendered from the English columns', async () => {
+  const persona = {
+    lang: 'en', ieumi_name: 'Ieumi', center_name: '서초 어르신 행복이음 센터',
+    center_name_en: 'Seocho Senior Centre',
+    services: [{ code: 's1', category: '건강 및 의료', category_en: 'Health & medical',
+                 sub: '응급 및 야간/휴일 진료', sub_en: 'Emergency & night care',
+                 description: '주말 당번 약국', description_en: 'Weekend duty pharmacies',
+                 org: '휴일지킴이약국', org_en: 'Holiday Pharmacy Finder' }],
+  };
+  const p = buildSystem(persona);
+  assert.ok(p.includes('Emergency & night care'), 'the English name is used');
+  assert.ok(p.includes('Weekend duty pharmacies'));
+  assert.ok(p.includes('Holiday Pharmacy Finder'), 'and the English organisation');
+  assert.ok(p.includes('Seocho Senior Centre'), 'and the English centre name');
+  assert.ok(/ANSWER IN ENGLISH/.test(p), 'with a directive to answer in English');
+});
+
+test('english: a row with no translation still reads, in Korean', async () => {
+  // 번역이 없는 줄이 빈칸이 되면 이음이가 이름 없는 서비스를 안내하게 됩니다.
+  // A half-translated catalogue must degrade field by field, never to a blank.
+  const p = buildSystem({ lang: 'en', services: [
+    { code: 's2', category: '건강', sub: '치매 및 노인성 질환', description: '조기 검진' }] });
+  assert.ok(p.includes('치매 및 노인성 질환'), 'the Korean stands in for a missing translation');
+  assert.ok(!/undefined|null/.test(p), 'and nothing leaks as undefined');
+});
+
+test('english mode changes the language, not the rules', async () => {
+  // 영어용 규칙을 따로 쓰면 그건 다른 시스템입니다 — 영어로 시험해도 서초에서
+  // 돌아가는 것을 증명하지 못합니다.
+  // A separate English rule set would be a second system, and testing it would
+  // prove nothing about the one that actually runs.
+  const svc = [{ code: 's1', category: '건강', sub: '응급 진료', description: '야간 병원',
+                 sub_en: 'Emergency care', description_en: 'Night hospitals',
+                 category_en: 'Health' }];
+  const ko = buildSystem({ services: svc });
+  const en = buildSystem({ lang: 'en', services: svc });
+  for (const rule of ['절대 지어내지 마세요', '답하는 방법', '"service":']) {
+    assert.ok(ko.includes(rule), 'Korean carries: ' + rule);
+    assert.ok(en.includes(rule), 'and English carries the same rule: ' + rule);
+  }
+});
+
+// ================================================================ 링크 내용 (2단계)
+// 클라이언트의 핵심 불만: "홈페이지에 나와 있는데 이음이는 모른다고 합니다."
+// 없었던 것은 모델도 규칙도 아니고, 그 페이지를 아무도 읽지 않았다는 것입니다.
+//
+// The client's central complaint was that Ieumi could not answer what its own
+// linked page plainly states. What was missing was not the model or the rules —
+// nothing had ever opened the page.
+const sourcesMod = require('../sources');
+
+test('sources: a support-amount table survives extraction', async () => {
+  // 탐님이 빨간 원으로 표시한 것이 표였습니다. 표를 태그째 지우면 숫자만 남고
+  // 무슨 값인지 사라집니다.
+  const html = '<table><tr><th>가구원수</th><td>1인</td><td>2인</td></tr>'
+            + '<tr><th>지원금액</th><td>30만원</td><td>40만원</td></tr></table>';
+  const out = sourcesMod.extractText(html);
+  assert.ok(out.includes('가구원수 | 1인 | 2인'), 'the header row keeps its columns');
+  assert.ok(out.includes('지원금액 | 30만원 | 40만원'), 'and each amount stays next to what it counts');
+});
+
+test('sources: navigation repeated on every page is dropped', async () => {
+  const html = '<div>서초구청</div><div>서초구청</div><div>서초구청</div><p>생계비 1인 30만원</p>';
+  const out = sourcesMod.extractText(html);
+  assert.strictEqual(out.split('서초구청').length - 1, 1, 'a repeated menu line appears once');
+  assert.ok(out.includes('생계비 1인 30만원'), 'and the content survives');
+});
+
+test('the prompt carries checked facts, with where and when', async () => {
+  const p = buildSystem({ services: [{ code: 's61', category: '복지', sub: '긴급복지지원',
+    description: '위기 가구 지원', org: '서초구청',
+    facts: '생계비: 1인 30만원, 2인 40만원.', facts_at: '2026-09-15' }] });
+  assert.ok(p.includes('확인된 자료'), 'the facts have their own block');
+  assert.ok(p.includes('생계비: 1인 30만원, 2인 40만원.'));
+  assert.ok(p.includes('서초구청'), 'attributed to the organisation');
+  assert.ok(p.includes('2026-09-15'), 'and dated, so Ieumi can say when it was checked');
+  assert.ok(/그대로 말해도 됩니다/.test(p), 'and the rule permits stating them');
+});
+
+test('a service with no checked facts keeps the do-not-invent rule', async () => {
+  // 자료가 없는 서비스까지 금액을 말하게 되면, 고친 것이 아니라 더 나빠진 것입니다.
+  // Loosening the rule for services whose page was never read would not be a fix,
+  // it would be the invention problem with extra steps.
+  const p = buildSystem({ services: [{ code: 's5', category: '복지', sub: '현금성 지원',
+    description: '연금 안내', org: '복지로' }] });
+  assert.ok(!p.includes('확인된 자료 —'), 'no facts block when nothing was read');
+  assert.ok(/절대 지어내지 마세요/.test(p), 'and the original prohibition still stands');
+});
+
+test('english: checked facts are carried in English too', async () => {
+  const p = buildSystem({ lang: 'en', services: [{ code: 's61', category: '복지',
+    sub: '긴급복지지원', sub_en: 'Emergency welfare', description: '위기 가구',
+    org: '서초구청', org_en: 'Seocho District Office',
+    facts: '생계비 2인 40만원.', facts_en: 'Living costs, 2 people: 400,000 won.',
+    facts_at: '2026-09-15' }] });
+  assert.ok(p.includes('CHECKED FACTS'));
+  assert.ok(p.includes('Living costs, 2 people: 400,000 won.'));
+  assert.ok(p.includes('Seocho District Office'));
+  assert.ok(!p.includes('생계비 2인 40만원.'), 'the Korean facts are not doubled up');
+});
+
+test('the service list says whether each link has been read', async () => {
+  // "60개 켜짐" 은 60개를 안내할 수 있다는 뜻이 아닙니다. 링크를 읽은 것만
+  // 금액·자격을 답할 수 있고, 그 차이가 화면에 보이지 않으면 아무도 모릅니다.
+  //
+  // Switched-on is not the same as answerable. Only a service whose page has
+  // been read can give an amount, and until this shipped that difference was
+  // invisible until a senior asked and got nothing.
+  const before = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie }))
+    .body.services.find((x) => x.code === 's1');
+  assert.strictEqual(before.source_status, null, 'nothing read yet');
+
+  await shim.query(
+    `INSERT INTO service_sources (service_id, url, fetched_at, status, facts, fact_chars)
+          VALUES ($1, $2, now(), 'ok', $3, $4)`,
+    [before.id, 'https://example.test/a', '생계비: 2인 40만원.', 14]);
+
+  const after = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie }))
+    .body.services.find((x) => x.code === 's1');
+  assert.strictEqual(after.source_status, 'ok');
+  assert.strictEqual(after.source_facts, '생계비: 2인 40만원.');
+  assert.ok(after.source_at, 'and when it was read');
+});
+
+test('the kiosk prompt picks up facts the moment they are stored', async () => {
+  const kioskCtx = require('../kiosk-context');
+  kioskCtx.bustAll();
+  const persona = await kioskCtx.forToken(kioskA);
+  const s1 = persona.services.find((x) => x.code === 's1');
+  assert.ok(s1, 's1 is switched on for this centre');
+  assert.strictEqual(s1.facts, '생계비: 2인 40만원.', 'the facts travel with the service');
+  assert.ok(buildSystem(persona).includes('생계비: 2인 40만원.'),
+    'and reach the prompt without any further step');
+});
+
+test("TENANT BOUNDARY — a centre cannot re-read another centre's source", async () => {
+  const mine = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie }))
+    .body.services.find((x) => x.scope === 'center');
+
+  // 다른 복지관을 지정해도 자기 복지관으로 돌아옵니다 — resolveCenter 가 §2 경계입니다.
+  // Naming another centre must not widen what this admin can act on.
+  const across = await call({ method: 'POST',
+    url: '/api/services/' + mine.id + '/source?center=' + centerB.id,
+    cookie: S.admin.cookie, body: {} });
+  assert.ok(across.statusCode === 403 || across.statusCode === 404,
+    'a centre admin naming another centre is refused, not served (got ' + across.statusCode + ')');
+
+  // 담당자는 이 버튼 자체를 쓸 수 없습니다 — staff read requests, they do not fetch.
+  const staff = await call({ method: 'POST', url: '/api/services/' + mine.id + '/source',
+    cookie: S.staff.cookie, body: {} });
+  assert.strictEqual(staff.statusCode, 403, 'staff cannot trigger a fetch');
+});
+
+// ============================================ 기계어가 말로 나가는 문제 (클라이언트 보고)
+// 태리PD님이 화면에서 본 그대로입니다:
+//   {"category":"기타",...," + Q + "pick" + Q + ":0," + Q + "어르신, 무엇에 대해…
+//
+// 프롬프트는 '할 말 먼저, JSON 마지막 줄' 이라고 합니다. 모델이 순서를 뒤집고
+// JSON 을 끝맺지 못하면 예전 파서는 원문 전체를 말로 내보냈습니다.
+//
+// Reported by the client: the model put the data line first and never closed it,
+// and the old parser spoke the whole raw string. A senior heard JSON read aloud.
+// 큰따옴표를 문자로 만들어 씁니다 — JSON 예시가 따옴표 범벅이라 읽기 어려워집니다.
+const Q = String.fromCharCode(34);
+
+test('a data line that comes first is never read aloud', async () => {
+  const { parseModelOutput } = require('../prompt');
+  const raw = '{' + Q + 'category' + Q + ':' + Q + '기타' + Q + ','
+    + Q + 'summary' + Q + ':' + Q + '불분명함' + Q + ',' + Q + 'offerSms' + Q + ':false,'
+    + Q + 'pick' + Q + ':0,' + Q + '어르신, 무엇에 대해 설명해 드릴까요?';
+  const out = parseModelOutput(raw);
+  assert.ok(!/"(category|offerSms|summary)"\s*:/.test(out.reply),
+    'the machine fields must never reach the speech bubble: ' + out.reply);
+  assert.ok(out.reply.includes('무엇에 대해 설명해'), 'and the human sentence is recovered');
+});
+
+test('a complete data line followed by speech keeps the speech', async () => {
+  const { parseModelOutput } = require('../prompt');
+  const raw = '{' + Q + 'category' + Q + ':' + Q + '복지' + Q + ',' + Q + 'summary' + Q + ':' + Q + 'x' + Q
+    + ',' + Q + 'offerSms' + Q + ':false,' + Q + 'pick' + Q + ':0,' + Q + 'service' + Q + ':0}'
+    + '\n어르신, 무엇을 도와드릴까요?';
+  const out = parseModelOutput(raw);
+  assert.strictEqual(out.reply, '어르신, 무엇을 도와드릴까요?');
+  assert.strictEqual(out.meta.category, '복지', 'and the data is still read');
+});
+
+test('when nothing human can be recovered, Ieumi asks again', async () => {
+  // 건질 문장이 없으면 기계어를 읽어 드리느니 다시 여쭙는 편이 낫습니다.
+  // With nothing recoverable, asking again beats reading machine output aloud.
+  const { parseModelOutput } = require('../prompt');
+  const raw = '{' + Q + 'category' + Q + ':' + Q + '기타' + Q + ',' + Q + 'offerSms' + Q + ':false,'
+    + Q + 'pick' + Q + ':0,' + Q + 'service' + Q + ':0}';
+  const ko = parseModelOutput(raw);
+  assert.ok(!/[{}]/.test(ko.reply), 'no braces are spoken');
+  assert.ok(/다시 말씀/.test(ko.reply), 'it asks the senior to repeat');
+  const en = parseModelOutput(raw, { lang: 'en' });
+  assert.ok(/say it once more/i.test(en.reply), 'and does so in English on an English kiosk');
+});
+
+test('the ordinary shape — speech then data line — is untouched', async () => {
+  const { parseModelOutput } = require('../prompt');
+  const raw = '네, 서초구청에서 확인하실 수 있어요.\n{' + Q + 'category' + Q + ':' + Q + '복지' + Q
+    + ',' + Q + 'summary' + Q + ':' + Q + 'x' + Q + ',' + Q + 'offerSms' + Q + ':true,'
+    + Q + 'pick' + Q + ':0,' + Q + 'service' + Q + ':1}';
+  const out = parseModelOutput(raw);
+  assert.strictEqual(out.reply, '네, 서초구청에서 확인하실 수 있어요.');
+  assert.strictEqual(out.meta.service, 1);
 });
 
 // ================================================================ run

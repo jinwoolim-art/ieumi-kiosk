@@ -5,6 +5,7 @@
 // never take a center_id straight from the request body.
 const db = require('./db');
 const auth = require('./auth');
+const sources = require('./sources');
 const kioskCache = require('./kiosk-context');
 const { HttpError } = auth;
 
@@ -406,6 +407,7 @@ async function listServices(req, res, user, url) {
             COALESCE(cs.override_link, s.link)               AS link,
             s.update_method,
             s.keywords,
+            s.category_en, s.sub_en, s.description_en, s.keywords_en, s.org_en,
             s.sub                    AS base_sub,
             s.description            AS base_description,
             s.org                    AS base_org,
@@ -413,9 +415,25 @@ async function listServices(req, res, user, url) {
             cs.override_sub IS NOT NULL OR cs.override_description IS NOT NULL
               OR cs.override_org IS NOT NULL OR cs.override_link IS NOT NULL AS overridden,
             COALESCE(cs.enabled, false)   AS enabled,
-            COALESCE(cs.sort_order, 9999) AS sort_order
+            COALESCE(cs.sort_order, 9999) AS sort_order,
+            -- 링크를 읽었는지 — 복지관이 직접 볼 수 있어야 합니다.
+            -- Whether the link behind this service has been read. The centre has
+            -- to be able to see this without asking us: a service with no facts
+            -- is one Ieumi can only point at, and that difference is invisible
+            -- from the outside until a senior asks and gets nothing.
+            src.status      AS source_status,
+            src.error       AS source_error,
+            src.fact_chars  AS source_chars,
+            src.facts       AS source_facts,
+            src.facts_en    AS source_facts_en,
+            to_char(src.fetched_at, 'YYYY-MM-DD HH24:MI') AS source_at
        FROM services s
        LEFT JOIN center_services cs ON cs.service_id = s.id AND cs.center_id = $1
+       LEFT JOIN LATERAL (
+         SELECT status, error, fact_chars, facts, facts_en, fetched_at
+           FROM service_sources WHERE service_id = s.id
+          ORDER BY fetched_at DESC NULLS LAST LIMIT 1
+       ) src ON true
       WHERE s.active = true AND (s.scope = 'common' OR s.center_id = $1)
       ORDER BY sort_order, s.code`,
     [centerId]);
@@ -877,6 +895,40 @@ const EDITABLE = ['category', 'sub', 'description', 'keywords', 'org', 'link', '
 const OVERRIDABLE = { sub: 'override_sub', description: 'override_description',
                       org: 'override_org', link: 'override_link' };
 
+/**
+ * POST /api/services/:id/source — 이 서비스의 링크를 지금 다시 읽습니다.
+ *
+ * 야간 동기화가 실패한 링크를 복지관이 스스로 다시 시도할 수 있어야 합니다.
+ * 한국 공공기관 서버는 자주 느려지고, 실패의 상당수는 그 순간의 문제였습니다 —
+ * 그럴 때 다음 날까지 기다리라고 할 이유가 없습니다.
+ *
+ * A nightly sync that failed on a slow government host should not cost the
+ * centre a day. Many of the failures measured were transient, so retrying by
+ * hand is worth a button.
+ *
+ * 한 건만 받습니다. 전체 갱신은 예약 작업(`npm run sync-sources`)의 일입니다 —
+ * 링크 50개를 HTTP 요청 하나 안에서 읽으면 그 요청은 반드시 끊깁니다.
+ */
+async function refreshServiceSource(req, res, user, url, id) {
+  auth.requireRole(user, 'master', 'center_admin');
+  if (!UUID.test(String(id || ''))) throw new HttpError(400, '잘못된 서비스 주소입니다.');
+
+  const svc = await db.all(
+    `SELECT id, code, sub, description, org, link FROM services
+      WHERE id = $1 AND active
+        AND (scope = 'common' OR center_id = $2)`,
+    [id, auth.resolveCenter(user, url.searchParams.get('center'))]);
+  if (!svc.length) throw new HttpError(404, '서비스를 찾을 수 없습니다.');
+  if (!String(svc[0].link || '').trim()) {
+    throw new HttpError(400, '이 서비스에는 링크가 없습니다. 먼저 링크를 넣어 주세요.');
+  }
+
+  const out = await sources.refreshOne(svc[0], { force: true });
+  // 자료가 바뀌면 프롬프트가 바뀝니다 — 캐시된 키오스크 사본을 버려야 합니다.
+  kioskCache.bustAll();
+  return send(res, 200, out);
+}
+
 async function updateService(req, res, user, url, id) {
   auth.requireRole(user, 'master', 'center_admin');
   if (!UUID.test(String(id || ''))) throw new HttpError(400, '잘못된 서비스 주소입니다.');
@@ -1004,6 +1056,7 @@ async function updateSettings(req, res, user, url) {
     voice_speed: (v) => str(v, 5),
     tone: (v) => (['warm', 'plain', 'cheerful'].includes(v) ? v : 'warm'),
     greeting: (v) => str(v, 500),
+    greeting_en: (v) => str(v, 500),
     roster_check_on: (v) => !!v,
     general_answers: (v) => !!v,
     chat_model: (v) => str(v, 80) || null,
@@ -1166,7 +1219,7 @@ async function kioskContext(req, res, url) {
   if (!center) throw new HttpError(404, '등록되지 않은 키오스크입니다.');   // unknown kiosk
 
   const settings = await db.one(
-    `SELECT ieumi_name, voice_speaker, voice_speed, tone, greeting, roster_check_on,
+    `SELECT ieumi_name, voice_speaker, voice_speed, tone, greeting, greeting_en, roster_check_on,
             general_answers
        FROM center_settings WHERE center_id = $1`, [center.id]);
 
@@ -1321,6 +1374,7 @@ const ROUTES = [
   ['POST',   /^\/api\/services\/import$/,    importServices],
   ['PUT',    /^\/api\/services\/priority$/,  savePriority],
   ['PATCH',  /^\/api\/services\/([\w-]+)$/,  updateService],
+  ['POST',   /^\/api\/services\/([\w-]+)\/source$/, refreshServiceSource],
 
   ['GET',    /^\/api\/settings$/,            getSettings],
   ['PATCH',  /^\/api\/settings$/,            updateSettings],

@@ -21,10 +21,10 @@ const DEFAULT_PERSONA = {
 
 // One round trip: the center, its settings, and its enabled services.
 const SQL = `
-  SELECT c.id AS center_id, c.name AS center_name, c.region,
+  SELECT c.id AS center_id, c.name AS center_name, c.name_en AS center_name_en, c.region,
          s.ieumi_name, s.tone, s.voice_speaker, s.voice_speed, s.chat_model,
          s.general_answers,
-         s.greeting, s.roster_check_on,
+         s.greeting, s.greeting_en, s.roster_check_on,
          COALESCE(svc.list, '[]'::json) AS services
     FROM centers c
     LEFT JOIN center_settings s ON s.center_id = c.id
@@ -37,10 +37,26 @@ const SQL = `
                  'description', COALESCE(cs.override_description, sv.description),
                  'org', COALESCE(cs.override_org, sv.org),
                  'link', COALESCE(cs.override_link, sv.link),
-                 'keywords', sv.keywords)
+                 'keywords', sv.keywords,
+                 'category_en', sv.category_en,
+                 'sub_en', sv.sub_en,
+                 'description_en', sv.description_en,
+                 'org_en', sv.org_en,
+                 -- 링크에서 읽어 온 사실 — 카탈로그를 대체하지 않고 그 위에 얹힙니다.
+                 -- What the linked page actually says. It rides alongside the
+                 -- catalogue row, never instead of it, so a service whose page
+                 -- could not be read still answers from the catalogue.
+                 'facts', src.facts,
+                 'facts_en', src.facts_en,
+                 'facts_at', to_char(src.fetched_at, 'YYYY-MM-DD'))
                ORDER BY cs.sort_order) AS list
         FROM center_services cs
         JOIN services sv ON sv.id = cs.service_id
+        LEFT JOIN LATERAL (
+          SELECT facts, facts_en, fetched_at FROM service_sources
+           WHERE service_id = sv.id AND status = 'ok' AND facts IS NOT NULL
+           ORDER BY fetched_at DESC LIMIT 1
+        ) src ON true
        WHERE cs.center_id = c.id AND cs.enabled = true AND sv.active = true
     ) svc ON true
    WHERE c.kiosk_token = $1 AND c.active = true`;

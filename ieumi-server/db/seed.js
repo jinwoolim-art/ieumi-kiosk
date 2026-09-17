@@ -26,6 +26,8 @@ const CENTER = {
   slug: env.SEED_CENTER_SLUG || 'seocho',
   name: env.SEED_CENTER_NAME || '서초 어르신 행복이음 센터',
   region: '서울특별시 서초구',
+  // 영어 이름은 한국어를 읽지 못하는 사람을 위한 편의입니다 — 원본은 위쪽입니다.
+  name_en: env.SEED_CENTER_NAME_EN || 'Seocho Senior Haengbok-Ieum Centre',
 };
 
 // Dummy numbers — the repository is public (PROJECT.md §9).
@@ -62,6 +64,8 @@ async function seed(db) {
        ON CONFLICT (slug) DO NOTHING`,
       [CENTER.slug, CENTER.name, CENTER.region, kioskToken],
     );
+    await c.query('UPDATE centers SET name_en = COALESCE(name_en, $2) WHERE slug = $1',
+      [CENTER.slug, CENTER.name_en]);
     const center = (await c.query('SELECT * FROM centers WHERE slug = $1', [CENTER.slug])).rows[0];
     console.log(`  ✔ center  ${center.name}  (${center.slug})`);
 
@@ -104,11 +108,31 @@ async function seed(db) {
 
       await c.query(
         `INSERT INTO services (code, scope, center_id, category, sub, description, keywords,
-                               org, link, update_method)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                               org, link, update_method,
+                               category_en, sub_en, description_en, keywords_en, org_en)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
          ON CONFLICT DO NOTHING`,
         [s.id, scope, centerId, s.cat, s.sub, s.desc, s.kw,
-         s.org || '', s.link || '', s.method || 'manual'],
+         s.org || '', s.link || '', s.method || 'manual',
+         s.cat_en || null, s.sub_en || null, s.desc_en || null, s.kw_en || null, s.org_en || null],
+      );
+
+      // 이미 있는 행에도 영어를 채웁니다 — 한국어는 건드리지 않습니다.
+      //
+      // The insert above cannot reach a row that already exists, and by the time
+      // English was added every catalogue in use was already seeded. This fills
+      // the blanks only: COALESCE keeps anything a human has already written, so
+      // re-seeding never overwrites a corrected translation.
+      await c.query(
+        `UPDATE services SET
+           category_en    = COALESCE(category_en, $2),
+           sub_en         = COALESCE(sub_en, $3),
+           description_en = COALESCE(description_en, $4),
+           keywords_en    = COALESCE(keywords_en, $5),
+           org_en         = COALESCE(org_en, $6)
+         WHERE code = $1`,
+        [s.id, s.cat_en || null, s.sub_en || null, s.desc_en || null,
+         s.kw_en || null, s.org_en || null],
       );
       mine ? local++ : common++;
 

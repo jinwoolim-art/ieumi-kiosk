@@ -14,9 +14,21 @@
     background:#f4f3f1 url('assets/prototype/배경칼라.png') center/cover no-repeat;border:2px solid #dfe3e6;border-radius:16px;overflow:hidden;box-shadow:0 30px 70px -25px rgba(0,0,0,.4)}
   .char{position:absolute;left:-5%;bottom:0;width:74%;height:110%;z-index:2;transform:scale(1.5);transform-origin:bottom center}
   .char img{width:100%;height:100%;object-fit:contain;object-position:bottom center}
+  /* 말풍선은 더 이상 글자 수만큼 자라지 않습니다.
+     긴 답변이 오면 말풍선이 화면 밖으로 흘러넘쳐, 어르신 그림과 버튼 위를 덮고
+     끝 문장은 화면 아래로 잘려 나갔습니다 (클라이언트 화면 사진 참고).
+     이제 높이를 정해 두고 그 안에서 굴러갑니다 — 자막이 나오는 대로 아래로
+     따라 내려갑니다.
+     The bubble used to grow with the text and spill outside the frame, covering
+     the character and the buttons, with the last sentences cut off below the
+     screen. It is now bounded and scrolls, following the subtitle down. */
   .bubble{position:absolute;top:6%;right:4%;left:43%;z-index:3;background:#fff;border:3px solid var(--line);border-radius:26px;padding:18px 18px;
-    display:flex;align-items:center;justify-content:center;text-align:center;font-size:23px;line-height:1.45;font-weight:800;color:var(--ink);word-break:keep-all;
-    box-shadow:0 14px 30px -18px rgba(63,143,191,.55);transition:.3s;min-height:120px}
+    display:flex;align-items:center;justify-content:center;text-align:center;font-size:23px;line-height:1.45;font-weight:800;color:var(--ink);word-break:keep-all;white-space:pre-wrap;
+    box-shadow:0 14px 30px -18px rgba(63,143,191,.55);transition:opacity .3s;min-height:120px;
+    max-height:54%;overflow-y:auto;scrollbar-width:none}
+  .bubble::-webkit-scrollbar{display:none}
+  /* 길어지면 글씨를 조금 줄입니다 — 그래도 어르신이 읽을 수 있는 크기입니다. */
+  .bubble.long{font-size:19px;align-items:flex-start}
   .bubble.hide{opacity:0}
   .call{position:absolute;right:9%;bottom:11%;z-index:4;width:110px;height:110px;cursor:pointer;border:none;background:none;padding:0;border-radius:50%}
   .call img{width:100%;height:100%;display:block;border-radius:50%}
@@ -83,7 +95,7 @@
        한 줄도 없어서 실제로는 누를 수 없었습니다 — 이음이는 "문자 받기를 누르세요"
        라고 말하는데 화면에는 그 버튼이 없었습니다. -->
   <div class="actions" id="actions">
-    <button id="talkBtn">🎤 말씀하기</button>
+    <button id="talkBtn">🎤 다시 말씀하기</button>
     <button id="smsBtn">📩 문자 받기</button>
   </div>
 
@@ -120,7 +132,7 @@
     </div>
   </div>
   <div class="brandwm">play4.co.kr</div>
-  <div class="note">※ 마이크 권한 허용 필요. 인식 안 되면 하단 입력창으로도 대화됩니다.</div>
+  <div class="note">※ 마이크 권한 허용 필요. 버튼을 누르지 않고 그냥 말씀하시면 됩니다.</div>
 </div>
 
 <script>
@@ -207,36 +219,259 @@ async function fileRequest(){
 }
 
 const setStatus=(t,on=true)=>{statusEl.textContent=t;statusEl.classList.toggle('show',on&&!!t);};
-const say=(t)=>{bubble.innerHTML=t;bubble.classList.remove('hide');};
 
-// ---- 음성 인식 (브라우저 STT) — 눌러서 말하기 ----
+// ---- 자막 ----
+// 이음이가 말하는 속도에 맞춰 글이 나옵니다 (클라이언트 요청).
 //
-// 예전에는 이음이가 답을 마치면 곧바로 마이크를 다시 켰습니다. 조용한 책상에서는
-// 괜찮았지만, 마이크가 주변 소음·정적을 말로 알아듣고 그것이 다시 질문이 되어
-// → 또 답하고 → 또 마이크를 켜는 무한 반복이 일어났습니다. 어르신이 타이핑으로
-// 시작해도 답변 뒤에 마이크가 켜져 똑같이 반복됐습니다.
+// 예전에는 Claude 가 글자를 보내는 대로 말풍선에 다 썼습니다. 글은 몇 백 밀리초
+// 만에 끝까지 나오는데 목소리는 그제야 첫 문장을 읽고 있으니, 화면과 소리가
+// 따로 놀았습니다. 어르신은 이미 다 적힌 긴 글을 보며 소리를 기다리셨습니다.
 //
-// 그래서 이제는 <어르신이 '말씀하기'를 누를 때만> 듣습니다. 자동으로 켜지지
-// 않으니 그 고리 자체가 생기지 않습니다. 경로당은 원래 시끄러운 곳입니다.
+// 이제 글은 <그 문장을 읽는 소리가 재생되는 동안> 그 길이에 맞춰 나옵니다.
+// 소리의 재생 위치(currentTime/duration)를 그대로 따라가므로, 말이 느리면 글도
+// 느리게, 빠르면 빠르게 나옵니다.
+//
+// The text used to be painted as Claude streamed it — the whole answer landed in
+// a few hundred milliseconds while the voice was still on the first sentence.
+// Now each sentence is revealed in step with the clip that speaks it, driven by
+// the audio element's own playback position, so the two can never drift.
+let subtitleDone='';        // 이미 다 읽은 문장들 — 화면에 그대로 남습니다
+let subtitlePending=false;  // 다음 소리가 나올 때 화면을 갈아 끼웁니다
+function subtitleShow(text){
+  bubble.textContent=text;
+  bubble.classList.remove('hide');
+  bubble.classList.toggle('long', text.length>120);
+  bubble.scrollTop=bubble.scrollHeight;   // 새로 나온 글이 늘 보이게
+}
+// 새 답변이 시작되지만, <아직 지우지는 않습니다.>
+//
+// 이음이가 생각하는 몇 초 동안 말풍선을 비워 두면 화면이 멍하니 빕니다. 그래서
+// 앞 답변을 그대로 두었다가, 새 목소리가 실제로 나오는 순간에 갈아 끼웁니다.
+function subtitleNewTurn(){ subtitlePending=true; }
+// 문장과 문장 사이는 한 칸 띄웁니다.
+// 합성에 넘기면서 문장마다 앞뒤 공백을 떼기 때문에, 그냥 이어 붙이면
+// "어르신.무엇을" 처럼 붙어 버립니다 — 읽기 좋으라고 고친 자막에서 그러면
+// 고친 보람이 없습니다.
+function spaced(prev){ return prev && !/\s$/.test(prev) ? prev + ' ' : prev; }
+function subtitleTakeTurn(){ if(subtitlePending){ subtitlePending=false; subtitleDone=''; } }
+function subtitleReset(){ subtitleDone=''; subtitlePending=false; bubble.textContent=''; bubble.classList.remove('long'); }
+
+// 정적인 화면 문구(대기 화면 등)는 예전처럼 한 번에 씁니다 — 읽어 줄 소리가 없습니다.
+const say=(t)=>{subtitleDone='';bubble.innerHTML=t;bubble.classList.toggle('long',(bubble.textContent||'').length>120);bubble.classList.remove('hide');};
+
+// ---- 음성 인식 (클로바) — 누르지 않고 그냥 말씀하시면 됩니다 ----
+//
+// 어르신들이 버튼 누르고 말하는 것을 불편해하십니다 (클라이언트 요청). 그래서
+// 이음이가 말을 마치면 마이크가 저절로 열립니다. 어르신은 그냥 말씀하시면 됩니다.
+//
+// <그런데 예전에 자동으로 열었을 때 무한 반복이 났습니다.> 마이크가 주변 소음과
+// 이음이 자신의 목소리를 말로 알아듣고, 그것이 다시 질문이 되어 → 또 답하고 →
+// 또 열리는 고리였습니다. 그래서 이번에는 세 가지를 막아 두었습니다:
+//   ① 이음이가 말하는 동안에는 마이크를 아예 연결하지 않습니다 (재생이 다 끝나고
+//      0.3초 뒤에 엽니다). 자기 목소리가 들어올 구멍 자체가 없습니다.
+//   ② 소리 크기를 재서, <말이 시작된 뒤에> 조용해질 때만 끊어 보냅니다.
+//      말이 한 번도 없었으면 아무것도 보내지 않습니다 — 조용한 방에서 혼자
+//      말을 만들어 내던 것이 바로 그 고리의 시작이었습니다.
+//   ③ 브라우저의 에코 제거·소음 억제를 켭니다.
+//
+// 인식은 브라우저 내장 기능이 아니라 <클로바>가 합니다. 브라우저 인식은 어르신
+// 말씀을 자주 놓쳤습니다. 보내는 소리는 16kHz 모노 WAV 입니다 — MediaRecorder 가
+// 만드는 webm/opus 는 클로바가 받지 않기 때문에, 여기서 직접 만듭니다.
+//
+// Listening is automatic again, which is what the client asked for — seniors
+// find press-to-talk awkward. The loop that made press-to-talk necessary is
+// prevented at the source instead: the microphone is not connected at all while
+// Ieumi is speaking, and a recording is only sent if speech was actually heard.
+// Recognition is CLOVA rather than the browser's, which missed a great deal of
+// what seniors said. CLOVA will not accept MediaRecorder's webm/opus, so raw PCM
+// is captured and wrapped as 16 kHz mono WAV here.
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let sttMode='clova';        // 클로바가 안 되면 브라우저 인식으로 내려앉습니다
 let rec=null, listening=false;
 
+const MIC={
+  rate:16000,
+  ctx:null, stream:null, src:null, node:null,
+  chunks:[], heardSpeech:false, floor:0, frames:0, silence:0, started:0,
+  stopping:false,
+};
+const SILENCE_MS=1300;      // 말이 끝나고 이만큼 조용하면 보냅니다
+const NO_SPEECH_MS=12000;   // 한 마디도 없으면 그냥 닫습니다 (보내지 않습니다)
+const MAX_MS=20000;         // 클로바 단문 인식 한도 안에서 끊습니다
+// 헛도는 것을 막는 두 개의 눈금. 어르신이 실제로 말씀하신 것이 한 번 들어오면
+// 둘 다 0 으로 돌아갑니다 (onUser).
+let quietRounds=0;          // 아무 소리도 없이 닫힌 횟수
+let emptyRounds=0;          // 소리는 났는데 말이 아니었던 횟수
+
 function paintTalk(){
-  talkBtn.textContent = listening ? '🔴 듣고 있어요 (누르면 멈춤)' : '🎤 말씀하기';
+  talkBtn.textContent = listening ? '🔴 듣고 있어요 (다 하시면 눌러 주세요)' : '🎤 다시 말씀하기';
   talkBtn.classList.toggle('on', listening);
   call.classList.toggle('listening', listening);
 }
 
+// 소리 → WAV. 클로바가 받는 형식입니다.
+function wavFromPcm(chunks, rate){
+  let len=0; for(const c of chunks) len+=c.length;
+  const buf=new ArrayBuffer(44+len*2), v=new DataView(buf);
+  const w=(o,s)=>{ for(let i=0;i<s.length;i++) v.setUint8(o+i,s.charCodeAt(i)); };
+  w(0,'RIFF'); v.setUint32(4,36+len*2,true); w(8,'WAVE'); w(12,'fmt ');
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,rate,true); v.setUint32(28,rate*2,true); v.setUint16(32,2,true);
+  v.setUint16(34,16,true); w(36,'data'); v.setUint32(40,len*2,true);
+  let o=44;
+  for(const c of chunks) for(let i=0;i<c.length;i++,o+=2){
+    const s=Math.max(-1,Math.min(1,c[i]));
+    v.setInt16(o, s<0 ? s*0x8000 : s*0x7FFF, true);
+  }
+  return new Blob([buf],{type:'audio/wav'});
+}
+
+// 마이크는 통화 한 번에 한 번만 엽니다 — 매번 열면 그때마다 반 초가 날아갑니다.
+async function micReady(){
+  if(MIC.stream) return true;
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
+  try{
+    MIC.stream=await navigator.mediaDevices.getUserMedia({audio:{
+      echoCancellation:true, noiseSuppression:true, autoGainControl:true,
+    }});
+    const AC=window.AudioContext||window.webkitAudioContext;
+    // 16kHz 로 직접 받습니다 — 브라우저가 알아서 변환해 주므로 여기서 다시
+    // 샘플을 솎아낼 필요가 없습니다.
+    try{ MIC.ctx=new AC({sampleRate:MIC.rate}); }catch(e){ MIC.ctx=new AC(); }
+    MIC.rate=MIC.ctx.sampleRate;
+    MIC.src=MIC.ctx.createMediaStreamSource(MIC.stream);
+    // ScriptProcessorNode 는 오래된 방식이지만, 원본 PCM 을 얻는 가장 확실한
+    // 길입니다. AudioWorklet 은 별도 파일이 필요해서 이 한 장짜리 화면에는
+    // 맞지 않습니다. 키오스크는 크롬에서 돕니다.
+    MIC.node=MIC.ctx.createScriptProcessor(2048,1,1);
+    MIC.node.onaudioprocess=(e)=>{
+      // 이 마디를 스피커로 내보내지 않습니다.
+      // ScriptProcessorNode 는 스피커에 이어 놓아야 동작하는데, 출력 버퍼를
+      // 그대로 두면 브라우저에 따라 마이크 소리가 스피커로 되돌아 나갈 수
+      // 있습니다 — 키오스크가 자기 소리를 다시 듣는, 바로 그 고리입니다.
+      const outb=e.outputBuffer.getChannelData(0);
+      outb.fill(0);
+      if(!listening) return;                       // 듣는 중이 아닐 때는 버립니다
+      const inb=e.inputBuffer.getChannelData(0);
+      MIC.chunks.push(new Float32Array(inb));
+      let sum=0; for(let i=0;i<inb.length;i++) sum+=inb[i]*inb[i];
+      const rms=Math.sqrt(sum/inb.length);
+      const frameMs=(inb.length/MIC.rate)*1000;
+      MIC.frames++;
+      // 처음 여섯 조각(약 0.8초)으로 이 방이 얼마나 시끄러운지 잽니다.
+      // 경로당은 조용한 사무실이 아닙니다 — 고정된 기준값을 쓰면 시끄러운 날엔
+      // 늘 말하는 중으로, 조용한 날엔 늘 침묵으로 잘못 읽습니다.
+      if(MIC.frames<=6){ MIC.floor=Math.max(MIC.floor,rms); return; }
+      const gate=Math.max(MIC.floor*2.2, 0.012);
+      if(rms>gate){ MIC.heardSpeech=true; MIC.silence=0; }
+      else if(MIC.heardSpeech){ MIC.silence+=frameMs; }
+      const elapsed=Date.now()-MIC.started;
+      if(MIC.heardSpeech && MIC.silence>=SILENCE_MS) finishListening(true);
+      else if(!MIC.heardSpeech && elapsed>NO_SPEECH_MS) finishListening(false);
+      else if(elapsed>MAX_MS) finishListening(MIC.heardSpeech);
+    };
+    return true;
+  }catch(e){ MIC.stream=null; return false; }
+}
+
+async function startListening(){
+  if(!active || listening) return;
+  if(sttMode==='browser') return startBrowserListening();
+  const ok=await micReady();
+  if(!ok){
+    // 마이크가 없거나 권한이 거부됨 — 브라우저 인식도 못 씁니다. 타이핑으로.
+    typerow.classList.add('show'); setStatus('아래에 입력해 주세요'); return;
+  }
+  MIC.chunks=[]; MIC.heardSpeech=false; MIC.floor=0; MIC.frames=0; MIC.silence=0;
+  MIC.started=Date.now(); MIC.stopping=false;
+  try{ if(MIC.ctx.state==='suspended') await MIC.ctx.resume(); }catch(e){}
+  MIC.src.connect(MIC.node); MIC.node.connect(MIC.ctx.destination);
+  listening=true; paintTalk();
+  setStatus('말씀하세요 🎙️');
+}
+
+// 마이크를 닫고, 말이 있었으면 클로바로 보냅니다.
+async function finishListening(send){
+  if(!listening || MIC.stopping) return;
+  MIC.stopping=true;
+  listening=false; paintTalk();
+  try{ MIC.src.disconnect(MIC.node); MIC.node.disconnect(); }catch(e){}
+  const chunks=MIC.chunks; MIC.chunks=[];
+  if(!send || !chunks.length){
+    // 한 마디도 없었습니다. 아무것도 보내지 않습니다 — 조용한 방을 말로
+    // 알아듣고 스스로 대화를 이어가던 것이 예전의 그 무한 반복이었습니다.
+    //
+    // 다만 한 번은 더 열어 드립니다. 어르신은 생각하시는 데 시간이 걸리고,
+    // 12초는 짧습니다. 그래도 아무 말씀이 없으면 화면으로 여쭙니다.
+    if(!active) return;
+    if(quietRounds<1){ quietRounds++; return startListening(); }
+    setStatus('말씀하시려면 아래 초록 버튼을 눌러 주세요. 입력하셔도 됩니다.');
+    typerow.classList.add('show');
+    return;
+  }
+  setStatus('알아듣는 중…');
+  try{
+    const wav=wavFromPcm(chunks, MIC.rate);
+    const r=await fetch(API+'/stt?lang='+LANG(),{method:'POST',
+      headers:{'content-type':'application/octet-stream'}, body:wav});
+    const d=await r.json().catch(()=>({}));
+    const t=(d.text||'').trim();
+    if(d.error && SR){
+      // 클로바가 막혀 있으면(키 미설정·미승인) 브라우저 인식으로 내려앉습니다.
+      // 어르신께는 아무 말도 하지 않습니다 — 그냥 계속 듣습니다.
+      sttMode='browser'; setStatus(''); return startBrowserListening();
+    }
+    if(!t){
+      // 소리는 났는데 말이 아니었습니다(기침·문 닫는 소리·옆자리 대화).
+      // 두 번까지만 다시 듣습니다 — 시끄러운 방에서 끝없이 되풀이하면
+      // 어르신은 가만히 서 계시는데 기계만 혼자 바쁩니다.
+      if(!active) return;
+      setStatus('잘 못 들었어요. 한 번만 더 말씀해 주세요.');
+      if(emptyRounds<2){ emptyRounds++; return startListening(); }
+      typerow.classList.add('show');
+      return;
+    }
+    setStatus('');
+    onUser(t);
+  }catch(e){
+    if(active){ setStatus('잘 못 들었어요. 한 번만 더 말씀해 주세요.'); typerow.classList.add('show'); }
+  }
+}
+
+// 어르신이 "다 말했어요" 하고 버튼을 누르셨을 때 — 지금까지 들은 것을 보냅니다.
+function stopListening(){
+  if(listening && sttMode==='clova'){ finishListening(MIC.heardSpeech); return; }
+  if(rec && listening){ try{ rec.stop(); }catch(e){} }
+  listening=false; paintTalk();
+}
+
+/**
+ * 듣던 것을 그냥 버립니다 — 보내지 않습니다.
+ *
+ * 어르신이 말씀 대신 타이핑을 하시거나 키패드를 여셨을 때 씁니다. 이때 녹음된
+ * 것을 인식에 보내면, 어르신이 이미 다른 방법으로 말씀하셨는데 그 소리가 뒤늦게
+ * 또 하나의 질문이 되어 들어옵니다 — 예전 무한 반복과 같은 모양입니다.
+ */
+function abortListening(){
+  if(!listening) return;
+  listening=false; MIC.stopping=true; MIC.chunks=[];
+  try{ MIC.src && MIC.src.disconnect(MIC.node); MIC.node && MIC.node.disconnect(); }catch(e){}
+  if(rec){ try{ rec.stop(); }catch(e){} }
+  paintTalk();
+}
+
+// ---- 예비책: 브라우저 내장 인식 ----
+// 클로바가 막혀 있을 때만 씁니다. 인식률은 낮지만, 아무 말도 못 알아듣는 것보다는
+// 낫습니다. 여기서도 마이크는 이음이가 말을 마친 뒤에만 열립니다.
 if(SR){ rec=new SR(); rec.lang='ko-KR'; rec.interimResults=false; rec.maxAlternatives=1;
   rec.onresult=e=>{
     const r=e.results[0][0];
     const t=(r.transcript||'').trim();
     // 소음 거르기. 글자 수로 자르지는 않습니다 — 한국어에서 "네", "예"는
     // 한 글자짜리 정상 대답이라, 짧다고 버리면 진짜 대답을 버리게 됩니다.
-    // 대신 빈 결과와, 브라우저가 스스로 자신 없다고 말한 결과만 무시합니다.
     const conf = typeof r.confidence==='number' ? r.confidence : 0;
     if(!t || (conf>0 && conf<0.3)){
-      if(active) setStatus('잘 못 들었어요. 다시 한 번 눌러서 말씀해 주세요.');
+      if(active) setStatus('잘 못 들었어요. 한 번만 더 말씀해 주세요.');
       return;
     }
     onUser(t);
@@ -245,43 +480,42 @@ if(SR){ rec=new SR(); rec.lang='ko-KR'; rec.interimResults=false; rec.maxAlterna
     if(active){ setStatus('말이 안 들려요. 아래에 입력해 주세요.'); typerow.classList.add('show'); } };
   rec.onend=()=>{ listening=false; paintTalk(); };
 }
-
-function startListening(){
+function startBrowserListening(){
   if(!active || listening) return;
   if(!rec){ typerow.classList.add('show'); setStatus('아래에 입력해 주세요'); return; }
   try{ rec.start(); listening=true; setStatus('말씀하세요 🎙️'); }
   catch(e){ listening=false; }
   paintTalk();
 }
-function stopListening(){
-  if(rec && listening){ try{ rec.stop(); }catch(e){} }
-  listening=false; paintTalk();
+
+// 마이크를 완전히 놓아 줍니다 — 통화가 끝나면 녹음 표시가 남아 있으면 안 됩니다.
+function micRelease(){
+  try{ MIC.src && MIC.node && MIC.src.disconnect(MIC.node); MIC.node && MIC.node.disconnect(); }catch(e){}
+  try{ MIC.stream && MIC.stream.getTracks().forEach(t=>t.stop()); }catch(e){}
+  try{ MIC.ctx && MIC.ctx.close(); }catch(e){}
+  MIC.stream=null; MIC.ctx=null; MIC.src=null; MIC.node=null; MIC.chunks=[];
 }
+
 // 무응답(침묵) 감지 → 통화 종료 버튼 강조 + 안내
 let idleTimer=null;
 function clearIdle(){ if(idleTimer){clearTimeout(idleTimer);idleTimer=null;} hang.classList.remove('alert'); }
 function armIdle(){ clearTimeout(idleTimer); idleTimer=setTimeout(()=>{
-  if(!active) return;
+  if(!active || listening) return;
   hang.classList.add('alert');
-  setStatus('말씀하시려면 "🎤 말씀하기"를 눌러 주세요. 아래에 입력하셔도 됩니다.', true);
+  setStatus('말씀하시려면 아래 초록 버튼을 눌러 주세요. 입력하셔도 됩니다.', true);
   typerow.classList.add('show');
-  // 12초였습니다. 이제는 어르신이 버튼을 찾아 누르셔야 하므로 조금 더 기다립니다.
-}, 20000); }
+}, 25000); }
 /**
- * 어르신 차례 — Ieumi has finished speaking and is waiting.
+ * 어르신 차례 — Ieumi has finished speaking, so the microphone opens by itself.
  *
- * This is what used to be `listen()`, which opened the microphone by itself.
- * Now it only *offers*: the buttons appear and nothing is recorded until the
- * senior presses 말씀하기. Without a microphone at all, the typing row opens
- * instead, which is also the fallback the idle timer falls back to.
+ * 이음이가 말을 다 끝낸 <뒤에> 열립니다. 재생이 끝나고 0.3초를 두는 것은, 스피커의
+ * 마지막 울림이 마이크로 들어가 그것이 다시 질문이 되는 일을 막기 위해서입니다.
  */
 function readyForUser(){
   if(!active) return;
-  stopListening();
   actions.classList.add('show');
-  if(rec) setStatus('아래 초록 버튼을 누르고 말씀해 주세요');
-  else { typerow.classList.add('show'); setStatus('아래에 입력해 주세요'); }
   armIdle();
+  setTimeout(()=>{ if(active && !listening && kwrap.classList.contains('hidden')) startListening(); }, 300);
 }
 
 // ---- 음성 출력 (스트리밍 파이프라인) ----
@@ -314,15 +548,67 @@ function ttsBlob(text){
 }
 
 // 문장 하나를 재생 대기열에 넣습니다. 합성은 지금 바로 시작합니다.
+// 자막으로 보여 줄 글도 <같은 문장>을 들고 갑니다 — 소리와 글이 한 짝입니다.
 function enqueueSpeech(text){
   const clean = stripForSpeech(text);
   if(!clean) return Promise.resolve();
   const epoch = speechEpoch;
   let done;
   const finished = new Promise(r=>{ done = r; });
-  speechQueue.push({ blob: ttsBlob(clean).catch(()=>null), done, epoch });
+  speechQueue.push({ blob: ttsBlob(clean).catch(()=>null), done, epoch, text: clean });
   drainSpeech();
   return finished;
+}
+
+/**
+ * 한 문장을 재생하면서, 그 소리에 맞춰 자막을 내보냅니다.
+ *
+ * 글자가 나오는 속도를 짐작해서 정하지 않습니다 — 지금 재생되고 있는 위치
+ * (currentTime / duration)를 그대로 씁니다. 그래서 복지관이 목소리 속도를
+ * 느리게 바꿔도(어르신용 설정), 자막이 알아서 같이 느려집니다.
+ *
+ * The reveal is not a guessed typing speed: it is the clip's own playback
+ * position. A centre that slows the voice down for its seniors gets slower
+ * subtitles for free, and the two cannot drift apart.
+ *
+ * 화면을 그리는 타이밍(requestAnimationFrame)이 아니라 <타이머>로 돕니다.
+ * 처음에는 requestAnimationFrame 을 썼는데, 브라우저가 화면을 안 그리는 상태
+ * (창이 뒤에 있거나 화면이 꺼졌을 때)에서는 한 번도 불리지 않아, 소리는 나는데
+ * 말풍선은 텅 빈 채로 있다가 문장이 끝나서야 한꺼번에 채워졌습니다. 실제로
+ * 그렇게 되는 것을 확인했습니다. 타이머는 그런 상태에서도 돕니다.
+ *
+ * Driven by a timer, not requestAnimationFrame: rAF does not fire at all while
+ * the page is not being painted — measured, zero callbacks — which left the
+ * voice playing against an empty bubble until the sentence ended. A kiosk whose
+ * browser is behind something else must still show its subtitles.
+ */
+const REVEAL_MS = 80;    // 0.08초마다 — 눈으로는 이어져 보이고, 일은 거의 없습니다
+
+function playAndReveal(blob, text){
+  return new Promise(res=>{
+    const before = spaced(subtitleDone);   // 이 문장 앞까지 이미 읽은 글 (+ 사이 한 칸)
+    const url = URL.createObjectURL(blob);
+    let timer = 0, settled = false;
+    const finish = ()=>{
+      if(settled) return; settled = true;
+      clearInterval(timer);
+      subtitleDone = before + text;       // 다 읽은 문장은 화면에 그대로 남습니다
+      subtitleShow(subtitleDone);
+      try{ URL.revokeObjectURL(url); }catch(e){}
+      res();
+    };
+    const tick = ()=>{
+      const d = audio.duration;
+      const frac = (d && isFinite(d) && d>0) ? Math.min(1, audio.currentTime/d) : 0;
+      subtitleShow(before + text.slice(0, Math.ceil(text.length*frac)));
+    };
+    audio.src = url;
+    audio.onended = finish; audio.onerror = finish;
+    const start = ()=>{ tick(); timer = setInterval(tick, REVEAL_MS); };
+    const p = audio.play();
+    if(p && p.then) p.then(start).catch(finish);
+    else start();
+  });
 }
 
 async function drainSpeech(){
@@ -332,14 +618,18 @@ async function drainSpeech(){
     const item = speechQueue.shift();
     try{
       const blob = await item.blob;
-      if(blob && item.epoch === speechEpoch){
+      if(item.epoch === speechEpoch){
         setStatus('이음이가 말하는 중…', true);
         call.classList.remove('listening');
-        await new Promise(res=>{
-          audio.src = URL.createObjectURL(blob);
-          audio.onended = res; audio.onerror = res;
-          audio.play().catch(()=>res());
-        });
+        subtitleTakeTurn();      // 새 답변의 첫 소리 — 이때 화면을 갈아 끼웁니다
+        if(blob){
+          await playAndReveal(blob, item.text);
+        }else{
+          // 소리가 안 나올 때는(합성 실패) 글만이라도 바로 보여 드립니다.
+          // 맞출 소리가 없는데 천천히 내보내면 그냥 느린 화면일 뿐입니다.
+          subtitleDone = spaced(subtitleDone) + item.text;
+          subtitleShow(subtitleDone);
+        }
       }
     }catch(e){}
     item.done();
@@ -356,7 +646,10 @@ function stopSpeech(){
 }
 
 // 한 덩어리를 말하고 끝날 때까지 기다립니다 (인사말·확인 등 단발 발화용).
-const speak = (text) => enqueueSpeech(text);
+// 자막도 이 안에서 나옵니다 — 부르는 쪽에서 따로 화면에 쓰지 않습니다.
+// 예전에는 say(m) 으로 먼저 다 써 놓고 speak(m) 으로 읽었기 때문에, 글이 늘
+// 소리보다 한 발 앞서 있었습니다.
+const speak = (text) => { subtitleNewTurn(); return enqueueSpeech(text); };
 
 // 스트리밍으로 들어오는 글을 문장 단위로 잘라 차례차례 합성에 넘깁니다.
 // 문장이 끝나야 자연스러운 억양이 나오므로, 완성된 문장만 보냅니다.
@@ -388,23 +681,23 @@ function makeSentencePump(){
 }
 
 // ---- 대화 한 턴 (스트리밍) ----
-// 답이 다 나올 때까지 기다리지 않습니다. 글자가 도착하는 대로 말풍선에 쓰고,
-// 문장이 하나 끝나면 곧바로 음성 합성을 시작합니다 (§3-6 ①②).
+// 답이 다 나올 때까지 기다리지 않습니다. 문장이 하나 끝나는 대로 음성 합성을
+// 시작하고, 자막은 그 소리에 맞춰 나옵니다 (§3-6 ①②).
 async function botTurn(){
+  subtitleNewTurn();
   setStatus('이음이가 생각하는 중…');
   const pump = makeSentencePump();
   let reply = '', meta = null, failed = '';
 
   try{
     const r = await fetch(API+'/chat',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({history, c:CTOKEN, stream:true})});
+      body:JSON.stringify({history, c:CTOKEN, stream:true, lang:LANG()})});
 
     if(!r.ok || !r.body) throw new Error('stream unavailable');
 
     const reader = r.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
-    let firstChunk = true;
 
     for(;;){
       const {done, value} = await reader.read();
@@ -418,9 +711,10 @@ async function botTurn(){
         let ev; try{ ev = JSON.parse(line); }catch(e){ continue; }
 
         if(typeof ev.t === 'string'){
-          if(firstChunk){ firstChunk = false; setStatus(''); }
           reply += ev.t;
-          say(reply);        // 말풍선은 글자가 오는 대로 자랍니다
+          // 여기서 화면에 쓰지 않습니다. 글은 그 문장을 읽는 소리와 함께 나옵니다
+          // (playAndReveal). 예전에는 이 자리에서 답을 통째로 써 버렸고, 그래서
+          // 화면은 이미 다 끝났는데 목소리는 첫 문장을 읽고 있었습니다.
           pump.push(ev.t);   // 문장이 끝나면 그 자리에서 합성 시작
         }
         if(ev.done){
@@ -433,25 +727,23 @@ async function botTurn(){
     // 스트리밍이 막힌 환경(프록시 등)에서는 예전 방식으로 한 번 더 시도합니다.
     try{
       const r = await fetch(API+'/chat',{method:'POST',headers:{'content-type':'application/json'},
-        body:JSON.stringify({history, c:CTOKEN})});
+        body:JSON.stringify({history, c:CTOKEN, lang:LANG()})});
       const d = await r.json();
       if(d.error) throw new Error(d.error);
       meta = d;
       reply = (d.parsed && d.parsed.reply) || d.raw || '';
-      say(reply);
       pump.push(reply);
     }catch(e2){
+      stopSpeech();
       say('연결에 문제가 있어요. 잠시 후 다시 해주세요.');
       setStatus('');
-      stopSpeech();
       return;
     }
   }
 
   if(failed || !reply.trim()){
-    say('죄송해요, 지금은 대답하기 어려워요.');
     if(failed) setStatus('⚠ '+String(failed).slice(0,70), true);
-    await enqueueSpeech('죄송해요, 지금은 대답하기 어려워요.');
+    await speak('죄송해요, 지금은 대답하기 어려워요.');
     if(active) readyForUser();
     return;
   }
@@ -475,7 +767,8 @@ async function botTurn(){
 async function onUser(text){
   if(!active) return;
   clearIdle();
-  stopListening();
+  abortListening();
+  quietRounds=0; emptyRounds=0;   // 어르신 말씀이 들어왔습니다 — 눈금을 되돌립니다
   actions.classList.remove('show');
   setStatus(''); typerow.classList.remove('show');
   history.push({role:'user',content:text});
@@ -498,10 +791,10 @@ async function onUser(text){
       }else{
         m=(nm?nm+' 어르신, ':'')+'지금은 알려드릴 다른 자리가 없어요. 담당 선생님께 전해드릴게요. 안녕히 가세요!';
       }
-      history.push({role:'assistant',content:m}); say(m); setStatus(''); await speak(m);
+      history.push({role:'assistant',content:m}); setStatus(''); await speak(m);
     }else{
       const m='네, 도움이 되셨길 바라요. 안녕히 가세요!';
-      history.push({role:'assistant',content:m}); say(m); await speak(m);
+      history.push({role:'assistant',content:m}); await speak(m);
     }
     return;
   }
@@ -518,7 +811,7 @@ $('#typein').addEventListener('keydown',e=>{ if(e.key==='Enter') $('#typebtn').c
 let phone='';
 const fmtp=p=>{let d=p;if(d.length>3&&d.length<=7)d=d.slice(0,3)+'-'+d.slice(3);else if(d.length>7)d=d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7,11);return d||'​';};
 function renderNum(){ num.textContent=fmtp(phone); }
-function openKeypad(){ phone=''; renderNum(); kpEntry.classList.remove('off'); kpConfirm.classList.add('off'); kpSent.classList.add('off'); kwrap.classList.remove('hidden'); actions.classList.remove('show'); stopListening(); }
+function openKeypad(){ phone=''; renderNum(); kpEntry.classList.remove('off'); kpConfirm.classList.add('off'); kpSent.classList.add('off'); kwrap.classList.remove('hidden'); actions.classList.remove('show'); abortListening(); }
 async function openConfirm(){
   cnum.textContent=fmtp(phone);
   await lookupMember(phone);          // 복지관 명단에 이 번호가 있는지 서버에 확인
@@ -580,7 +873,7 @@ async function doSend(){
   const content = await requestSms('send').catch(()=>'');
   smsSent=true; showSentCard('✅ 문자를 보냈어요', content); setStatus('');
   const done=(nm?nm+' 어르신, ':'')+'말씀하신 번호로 문자를 보내드렸어요.';
-  history.push({role:'assistant',content:done}); say(done); offerSms=false;
+  history.push({role:'assistant',content:done}); offerSms=false;
   await speak(done);
   if(!active) return;
 
@@ -590,7 +883,7 @@ async function doSend(){
   const hasOther = JOBS.some(j=>!pickedJob||j.id!==pickedJob.id);
   if(!hasOther){ readyForUser(); return; }
   const fu='그리고 어르신이 찾으시는 일자리와 비슷하거나, 알려드릴 만한 다른 일자리가 또 있으면, 그것도 문자로 보내드릴까요?';
-  awaitingFollowup=true; history.push({role:'assistant',content:fu}); say(fu); await speak(fu); readyForUser();
+  awaitingFollowup=true; history.push({role:'assistant',content:fu}); await speak(fu); readyForUser();
 }
 kwrap.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)return; const a=b.dataset.act;
   if(a==='cyes'){ doSend(); return; }
@@ -607,15 +900,24 @@ smsBtn.addEventListener('click',()=>{ if(active) openKeypad(); });
 async function start(){
   active=true; history=[]; offerSms=false; pickedJob=null; awaitingFollowup=false;
   lastSummary=''; lastCategory=''; smsSent=false; memberInfo=null; phone='';
-  lastServiceCode=''; lastServiceName='';
+  lastServiceCode=''; lastServiceName=''; quietRounds=0; emptyRounds=0; sttMode='clova';
   call.classList.remove('invite'); hang.classList.add('show'); actions.classList.remove('show');
   // 복지관 설정(이름·인사말·목소리)을 먼저 받아옵니다.
-  const greet=(CTX.settings&&CTX.settings.greeting)
-    || ('안녕하세요, 어르신. 저는 말벗 '+ieumiName()+'예요. 무엇을 도와드릴까요?');
-  history.push({role:'assistant',content:greet}); say(greet);
+  // 인사말은 복지관이 써넣은 자료입니다 — 화면 언어에 맞는 쪽을 씁니다.
+  // 영어 인사가 비어 있으면 기본 문장을 쓰되, 이음이 이름은 복지관 것을 그대로.
+  //
+  // The greeting is the centre's own content, so it has a column per language
+  // rather than a dictionary entry. With no English greeting stored, fall back
+  // to a neutral one that still uses this centre's name for Ieumi.
+  const inEn = LANG()==='en';
+  const greet=(inEn && CTX.settings && CTX.settings.greeting_en)
+    || (!inEn && CTX.settings && CTX.settings.greeting)
+    || (inEn ? ('Hello. I am '+ieumiName()+', here to keep you company. What can I help you with?')
+             : ('안녕하세요, 어르신. 저는 말벗 '+ieumiName()+'예요. 무엇을 도와드릴까요?'));
+  history.push({role:'assistant',content:greet});
   await speak(greet); readyForUser();
 }
-function end(){ active=false; clearIdle(); if(rec)try{rec.stop()}catch(e){} stopSpeech();
+function end(){ active=false; clearIdle(); abortListening(); micRelease(); stopSpeech(); subtitleReset();
   fileRequest();                          // 통화 내용을 담당자 대시보드로 넘깁니다
   call.classList.add('invite'); hang.classList.remove('show'); actions.classList.remove('show'); typerow.classList.remove('show'); kwrap.classList.add('hidden');
   setStatus(''); say('수화기를 들고<br/>아래 초록 버튼을<br/>눌러주세요.'); }
@@ -629,5 +931,23 @@ loadContext().then(()=>{
   if(CTX.center) document.title=ieumiName()+' · '+CTX.center.name;
 });
 </script>
+
+<script>
+// 화면 언어를 서버에 알려 줍니다 — i18n.js 가 아직 안 떴으면 주소·저장값을 봅니다.
+// Tell the server which language the screen is in. i18n.js may not have loaded
+// yet when the first turn fires, so fall back to the URL and stored choice.
+function LANG(){
+  try{ if(window.I18N && window.I18N.lang) return window.I18N.lang; }catch(e){}
+  try{
+    const q=new URLSearchParams(location.search).get("lang");
+    if(q==="en"||q==="ko") return q;
+    return localStorage.getItem("ieumi_lang")==="en"?"en":"ko";
+  }catch(e){ return "ko"; }
+}
+</script>
+<!-- 언어 전환 (한국어 ⇄ English). 사전에 없는 문장은 한글로 남습니다.
+     Language switch. Load with ?lang=en, or ?i18n=debug to list gaps. -->
+<script src="i18n-en.js"></script>
+<script src="i18n.js"></script>
 </body>
 </html>
