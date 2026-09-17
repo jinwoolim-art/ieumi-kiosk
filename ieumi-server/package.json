@@ -11,7 +11,9 @@
     "setup": "node db/migrate.js && node db/seed.js",
     "test": "node test/run.js",
     "sync-jobs": "node db/sync-jobs.js",
-    "sync-sources": "node db/sync-sources.js"
+    "sync-sources": "node db/sync-sources.js",
+    "check-links": "node check-links.js",
+    "relay": "node korea-relay.js"
   },
   "dependencies": {
     "pg": "^8.13.1"

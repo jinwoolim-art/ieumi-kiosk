@@ -19,6 +19,7 @@
 const crypto = require('crypto');
 const db = require('./db');
 const env = require('./env');
+const render = require('./render');
 
 // 브라우저와 같은 신원으로 요청합니다 — 봇 이름을 쓰면 아예 거부하는 사이트가
 // 있습니다 (fss.or.kr 이 그랬습니다: 봇 UA 는 소켓 끊김, 브라우저 UA 는 HTTP 200).
@@ -65,20 +66,93 @@ async function fetchPage(url, attempt = 0) {
   }
 }
 
-async function fetchOnce(url) {
+// 한국 중계를 거칠 것인가.
+//
+// KOREA_RELAY_URL 이 설정되어 있으면 페이지를 그 서버에게 대신 열어 달라고
+// 부탁합니다. 한국 사이트 상당수가 해외 IP 를 막기 때문입니다 (열두 곳 확인).
+// 설정이 없으면 예전 그대로 직접 엽니다 — 한국에서 돌릴 때는 중계가 필요 없습니다.
+//
+// With KOREA_RELAY_URL set, pages are fetched through a small relay running in
+// Korea (korea-relay.js); without it, directly, exactly as before. Only the
+// page-reading job needs this — Claude, CLOVA and data.go.kr all answer from
+// anywhere, so nothing else changes.
+const RELAY = (env.KOREA_RELAY_URL || '').replace(/\/+$/, '');
+const RELAY_TOKEN = env.KOREA_RELAY_TOKEN || '';
+
+// 글이 얼마나 들어 있는지 — 껍데기인지 아닌지 가늠하는 데만 씁니다.
+// extractText 를 쓰지 않는 것은, 이 판단이 본문 추출보다 먼저 와야 하기 때문입니다.
+const textLength = (html) => (html || '')
+  .replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '')
+  .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().length;
+
+async function relayFetch(url, { render: wantRender = false } = {}) {
+  const q = `url=${encodeURIComponent(url)}${wantRender ? '&render=1' : ''}`;
+  const r = await fetch(`${RELAY}/fetch?${q}`, {
+    headers: RELAY_TOKEN ? { 'x-relay-token': RELAY_TOKEN } : {},
+    // 중계가 브라우저까지 띄울 수 있으므로 넉넉히 기다립니다.
+    signal: AbortSignal.timeout(FETCH_MS + 60_000),
+  });
+  if (!r.ok) {
+    const why = await r.json().catch(() => ({}));
+    throw new Error('relay ' + r.status + ' ' + String(why.error || '').slice(0, 80));
+  }
+  // 중계는 바이트 그대로와 원래 content-type 을 따로 돌려줍니다 (EUC-KR 보존).
+  return {
+    status: Number(r.headers.get('x-relay-status')) || 200,
+    type: r.headers.get('x-relay-content-type') || '',
+    buf: Buffer.from(await r.arrayBuffer()),
+  };
+}
+
+async function directFetch(url) {
   const r = await fetch(url, {
     headers: { 'user-agent': UA, accept: 'text/html,application/xhtml+xml' },
     signal: AbortSignal.timeout(FETCH_MS),
     redirect: 'follow',
   });
-  const type = r.headers.get('content-type') || '';
-  if (!r.ok) return { httpStatus: r.status, html: '', error: 'HTTP ' + r.status };
+  return {
+    status: r.status,
+    type: r.headers.get('content-type') || '',
+    buf: Buffer.from(await r.arrayBuffer()),
+  };
+}
+
+// 그냥 받아왔을 때 글이 이보다 적으면, 브라우저로 한 번 더 열어 봅니다.
+// 내용이 있는 페이지는 400자를 훌쩍 넘습니다 — 이보다 적다는 것은 대개
+// 자바스크립트가 채우기 전의 빈 껍데기라는 뜻입니다.
+const THIN_CHARS = Number(env.RENDER_THIN_CHARS || 400);
+
+// 브라우저로 여는 것은 <필요할 때만> 합니다.
+//
+// 링크 쉰두 개 중 서른일곱 개는 그냥 받아와도 멀쩡합니다. 전부 브라우저로 열면
+// 한 번 도는 데 몇 분이 더 걸리고, 얻는 것은 없습니다. 그래서 받아온 것이
+// 비어 있을 때만 다시 엽니다.
+//
+// Rendering is the slow path, taken only when the cheap one came back empty:
+// 37 of 52 links are fine as a plain fetch, and rendering all of them would add
+// minutes per run for nothing.
+async function maybeRender(url, html) {
+  if (textLength(html) >= THIN_CHARS) return html;
+  if (!render.available()) return html;
+  try {
+    const rendered = await render.renderHtml(url);
+    // 더 나아졌을 때만 바꿉니다. 브라우저가 오류 화면을 뱉는 경우도 있습니다.
+    return textLength(rendered) > textLength(html) ? rendered : html;
+  } catch {
+    return html;   // 렌더링 실패는 그냥 원래 것으로 — 하루 치 자료를 잃지 않습니다
+  }
+}
+
+async function fetchOnce(url) {
+  const r = RELAY ? await relayFetch(url, { render: true }) : await directFetch(url);
+  const type = r.type;
+  if (r.status < 200 || r.status >= 300) return { httpStatus: r.status, html: '', error: 'HTTP ' + r.status };
   if (!/html|text/i.test(type)) {
     // PDF·ZIP 은 이 경로로 읽지 않습니다 — a binary is a different job, and
     // guessing at one produces confident nonsense.
     return { httpStatus: r.status, html: '', error: 'not html (' + type.split(';')[0] + ')' };
   }
-  const buf = Buffer.from(await r.arrayBuffer());
+  const buf = r.buf;
   if (buf.length > MAX_BYTES) return { httpStatus: r.status, html: '', error: 'too large' };
 
   // 한국 공공기관 페이지는 아직 EUC-KR 이 남아 있습니다.
@@ -87,6 +161,11 @@ async function fetchOnce(url) {
   let html;
   try { html = new TextDecoder(declared.toLowerCase()).decode(buf); }
   catch { html = buf.toString('utf8'); }
+
+  // 중계를 쓰는 경우에는 중계 쪽에서 이미 브라우저로 열어 봤습니다 — 그 편이
+  // 맞습니다. 막힌 사이트는 한국에서만 열리므로, 브라우저도 한국에서 돌아야 합니다.
+  if (!RELAY) html = await maybeRender(url, html);
+
   return { httpStatus: r.status, html, error: null };
 }
 
