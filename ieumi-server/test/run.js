@@ -2286,6 +2286,32 @@ test('a page we chose to follow is tried once; the catalogue link is tried three
   assert.strictEqual(followed[1], 1, 'but gets a single attempt, so a flaky one cannot cost minutes');
 });
 
+test('an account limit is reported in words, and stops the run', async () => {
+  // 2026-09-18: 아홉 건이 'summary failed' 로 실패했습니다. 진짜 이유는
+  // 데이터베이스에만 적혀 있었고 — "You have reached your specified API usage
+  // limits" — 화면만 보고는 코드가 고장 난 것처럼 보였습니다. 게다가 실패할 것이
+  // 뻔한 호출을 여덟 번 더 던졌습니다.
+  const sources = require('../sources');
+  const svc = (await shim.query("SELECT id, code, sub, link FROM services WHERE code = 's23'")).rows[0];
+  const page = { httpStatus: 200, error: null, html: '<p>' + '안내입니다. '.repeat(40) + '</p>' };
+
+  const limit = await sources.refreshOne({ ...svc, link: 'https://x.example.kr/' }, { force: true, deps: {
+    fetchPage: async () => page,
+    summarise: async () => { throw new Error('You have reached your specified API usage limits. You will regain access on 2026-10-01 at 00:00 UTC.'); },
+  } });
+  assert.match(limit.reason, /usage limits/,
+    'the console must show what actually happened, not the words "summary failed"');
+  assert.strictEqual(limit.fatal, true, 'and the run must stop rather than burn the rest of the list');
+
+  // 반대로, 그 서비스 하나만의 문제는 멈추지 않습니다.
+  const oneOff = await sources.refreshOne({ ...svc, link: 'https://x.example.kr/' }, { force: true, deps: {
+    fetchPage: async () => page,
+    summarise: async () => { throw new Error('socket hang up'); },
+  } });
+  assert.ok(!oneOff.fatal, 'a network blip is this service\'s problem, not the account\'s');
+  assert.match(oneOff.reason, /socket/);
+});
+
 test('one bad sub-page does not cost the service the pages that did open', async () => {
   // 하위 한 장이 흔들렸다고 어제까지 답하던 강좌표가 사라지면, 고치기 전보다
   // 나빠진 것입니다 — 조용히 나빠지는 쪽이라 더 나쁩니다.

@@ -810,6 +810,17 @@ function chunkText(text, { maxChars = CHUNK_CHARS, tableRows = TABLE_ROWS } = {}
 // ---------------------------------------------------------------- 한 건 갱신
 const hash = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
+// 다음 서비스에서도 똑같이 실패할 종류의 오류.
+//
+// 계정 한도나 크레딧이 떨어진 것은 '이 서비스만의 문제' 가 아닙니다. 그런데도
+// 예전에는 남은 서비스를 끝까지 돌면서 실패할 것이 뻔한 호출을 계속 던졌습니다.
+// 2026-09-18 실행에서 아홉 번이 그렇게 낭비되었습니다 — 시간도, 남은 한도도.
+//
+// An account limit is not a per-service problem, but the run used to keep going
+// and fire eight more calls that could only fail. Stop at the first one.
+const FATAL =
+  /usage limit|credit balance|quota|billing|insufficient|invalid x-api-key|authentication_error|permission_error/i;
+
 /**
  * 서비스 하나의 링크를 읽어 사실을 저장합니다.
  *
@@ -985,11 +996,25 @@ async function refreshOne(service, { force = false, deps = {} } = {}) {
   let facts;
   try { facts = await sum(service, merged); }
   catch (e) {
+    // 왜 실패했는지를 <화면에> 내보냅니다.
+    //
+    // 예전에는 여기서 'summary failed' 라는 말만 돌려주었습니다. 진짜 이유는
+    // 데이터베이스에만 적혔고, 그것을 읽어 보기 전에는 아무도 알 수 없었습니다.
+    // 실제로 2026-09-18 에 아홉 건이 이 문구로 실패했는데, 데이터베이스에 적힌
+    // 진짜 이유는 "You have reached your specified API usage limits" 였습니다 —
+    // 화면만 보고는 코드가 고장 난 것처럼 보였습니다.
+    //
+    // It used to return the words "summary failed" and put the real message in
+    // the database, where nobody would look. Nine services failed this way and
+    // the actual reason was an API usage limit — from the console it looked like
+    // broken code.
+    const why = String((e && e.message) || e || '').replace(/\s+/g, ' ').trim();
     await save(service, url, { status: 'error', http: page.httpStatus,
-                               error: 'summary: ' + String(e.message || e).slice(0, 160),
+                               error: 'summary: ' + why.slice(0, 160),
                                hash: h, raw: text.length, kind: 'landing', text,
                                facts: before && before.facts, facts_en: before && before.facts_en });
-    return { code: service.code, status: 'error', reason: 'summary failed' };
+    return { code: service.code, status: 'error', reason: why.slice(0, 120),
+             fatal: FATAL.test(why) };
   }
 
   // 읽어 온 글에 근거가 없는 줄은 여기서 걷어냅니다 (③-b). 모델이 빈 곳을
@@ -1142,6 +1167,8 @@ async function refreshAll({ force = false, only = null, onProgress = () => {} } 
     const r = await refreshOne(s, { force });
     out.push(r);
     onProgress(r, out.length, rows.length);
+    // 계정 한도에 걸렸으면 여기서 멈춥니다 — 남은 서비스도 똑같이 실패합니다.
+    if (r.fatal) break;
   }
   return out;
 }

@@ -32,10 +32,12 @@ const env = require('../env.js');
   if (force) console.log('  --force: 내용이 같아도 다시 요약합니다\n');
 
   const t0 = Date.now();
+  let total = 0;   // refreshAll 이 중간에 멈출 수 있어, 전체 개수는 진행 콜백에서 받습니다
   const out = await sources.refreshAll({
     force,
     only: only.length ? only : null,
     onProgress: (r, i, n) => {
+      total = n;
       const mark = { ok: '✔', unchanged: '·', empty: '○', error: '✖', skipped: '–' }[r.status] || '?';
       // 몇 장을 따라갔고 그림을 몇 장 읽었는지 함께 보여 줍니다. "읽었다" 와
       // "강좌표까지 읽었다" 는 다르고, 그 차이가 이번 작업의 전부입니다.
@@ -70,6 +72,23 @@ const env = require('../env.js');
   if (bad.length) {
     console.log('\n  읽지 못한 링크 — these keep their previous facts, if any:');
     bad.forEach((r) => console.log('    ' + r.code.padEnd(5) + r.reason));
+  }
+
+  // 계정 한도에 걸려 멈춘 경우에는, 그것이 무엇이었는지 크게 알려 줍니다.
+  // 링크가 잘못된 것과 지갑이 닫힌 것은 할 일이 전혀 다릅니다.
+  const stopped = out.find((r) => r.fatal);
+  if (stopped) {
+    const left = total - out.length;
+    console.log('\n  ' + '='.repeat(64));
+    console.log('  멈췄습니다 — 계정 한도/크레딧 문제입니다. 링크 문제가 아닙니다.');
+    console.log('  STOPPED on an account limit, not a link problem:');
+    console.log('\n    ' + stopped.reason);
+    if (left > 0) console.log('\n  남은 서비스 ' + left + '개는 시도하지 않았습니다 (똑같이 실패합니다).');
+    console.log('  한도를 올리거나 풀린 뒤에 이 파일을 다시 돌리면 됩니다 —');
+    console.log('  이미 읽은 것은 "unchanged" 로 건너뛰므로 처음부터 다시 하지 않습니다.');
+    console.log('\n  Raise the limit, then run this again: everything already read is');
+    console.log('  skipped as "unchanged", so a retry is cheap.');
+    console.log('  ' + '='.repeat(64));
   }
   console.log('');
   await db.pool.end();
