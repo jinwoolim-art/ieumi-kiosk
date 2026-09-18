@@ -16,6 +16,21 @@ REM ============================================================================
 setlocal
 cd /d "%~dp0"
 
+REM ---- do you actually need this? --------------------------------------------
+REM  This exposes the RELAY (port 8799), not the kiosk. It is only useful when
+REM  the app runs outside Korea and needs this box to fetch pages for it.
+REM  To give someone a link to the KIOSK, that is share-kiosk.bat instead.
+echo.
+echo   ----------------------------------------------------------------
+echo    DO YOU NEED THIS?  Only if the Ieumi server runs OUTSIDE Korea.
+echo.
+echo    This exposes the RELAY, not the kiosk. If you want a link to
+echo    send someone, you want share-kiosk.bat instead.
+echo   ----------------------------------------------------------------
+echo.
+echo   Continuing in 8s  [Ctrl+C to stop]
+timeout /t 8 /nobreak >nul
+
 set PORT=8799
 if not "%KOREA_RELAY_PORT%"=="" set PORT=%KOREA_RELAY_PORT%
 

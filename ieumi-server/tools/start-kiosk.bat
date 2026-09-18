@@ -75,6 +75,21 @@ for %%K in (DATABASE_URL ANTHROPIC_API_KEY CLOVA_API_KEY_ID CLOVA_API_KEY) do (
   findstr /b /c:"%%K=" .env >nul 2>nul || echo   [!] %%K is not in .env
 )
 
+REM ---- running in Korea? then the relay is dead weight ------------------------
+REM  KOREA_RELAY_URL routes every page fetch through the relay and a Cloudflare
+REM  tunnel. That exists for running the app abroad. On a Korea box it is a
+REM  needless extra hop on every fetch, and the page sync pays it hundreds of
+REM  times -- measured in hours, not minutes.
+findstr /b /c:"KOREA_RELAY_URL=http" .env >nul 2>nul && (
+  echo.
+  echo   [!] KOREA_RELAY_URL is set in .env.
+  echo       If THIS machine is in Korea you do not need it. Delete the
+  echo       KOREA_RELAY_URL and KOREA_RELAY_TOKEN lines from .env and the
+  echo       page sync gets much faster. Then you can also stop
+  echo       start-relay.bat and start-tunnel.bat for good.
+  echo.
+)
+
 REM ---- the address to hand out ----------------------------------------------
 REM  The ?c= token identifies the centre. Mistyping it does not fail -- the page
 REM  loads and quietly serves another centre's catalogue -- so it is printed.

@@ -21,6 +21,28 @@ REM ============================================================================
 setlocal
 cd /d "%~dp0\.."
 
+REM ---- do you actually need this? --------------------------------------------
+REM  The relay exists so the app can live OUTSIDE Korea and still read Korean
+REM  government sites. If the app runs on this same Korea box, it can open those
+REM  sites itself, and routing through relay + tunnel only adds a network hop to
+REM  every single page fetch -- which the nightly sync pays hundreds of times.
+echo.
+echo   ----------------------------------------------------------------
+echo    DO YOU NEED THIS?  Only if the Ieumi server runs OUTSIDE Korea.
+echo.
+echo    If start-kiosk.bat runs on THIS machine, you do NOT need the
+echo    relay. The server opens Korean sites directly, and going through
+echo    the relay only makes the page sync slower.
+echo.
+echo    In that case: close this window, and delete these two lines
+echo    from ieumi-server\.env:
+echo        KOREA_RELAY_URL=...
+echo        KOREA_RELAY_TOKEN=...
+echo   ----------------------------------------------------------------
+echo.
+echo   Continuing in 8s  [Ctrl+C to stop]
+timeout /t 8 /nobreak >nul
+
 REM ---- find node -------------------------------------------------------------
 REM  Double-clicking a .bat inherits Explorer's environment, which can still be
 REM  the one from BEFORE node was installed. So if PATH does not have it, look
