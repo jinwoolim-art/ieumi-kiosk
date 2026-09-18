@@ -11,6 +11,7 @@ const db = require('./db');
 const auth = require('./auth');
 const api = require('./api');
 const kioskContext = require('./kiosk-context');
+const retrieval = require('./retrieval');
 const jobs = require('./jobs');
 
 const AKEY = env.ANTHROPIC_API_KEY;
@@ -148,7 +149,7 @@ function toMessages(history) {
 const THINKING_OFF = { type: 'disabled' };
 
 const chatBody = (history, jobsInfo, model, persona, stream, opts = {}) => {
-  const { thinking = true, cache = true } = opts;
+  const { thinking = true, cache = true, detail = '' } = opts;
   const msgs = toMessages(history);
   if (!msgs.length) throw new Error('no user message yet');
   return JSON.stringify({
@@ -164,7 +165,7 @@ const chatBody = (history, jobsInfo, model, persona, stream, opts = {}) => {
     // Raising a ceiling costs nothing when the answers stay short; a reply cut
     // mid-sentence costs the senior the answer and the dashboard its record.
     max_tokens: 700,
-    system: systemBlocks(persona, jobsInfo, { cache }),
+    system: systemBlocks(persona, jobsInfo, { cache, detail }),
     messages: msgs,
     ...(thinking ? { thinking: THINKING_OFF } : {}),
     ...(stream ? { stream: true } : {}),
@@ -188,8 +189,8 @@ const degrade = (status, detail, opts) => {
   return null;
 };
 
-async function callClaude(history, jobsInfo, model, persona) {
-  let opts = {};
+async function callClaude(history, jobsInfo, model, persona, detail = '') {
+  let opts = { detail };
   for (;;) {
     const r = await pfetch('https://api.anthropic.com/v1/messages', {
       method: 'POST', headers: CLAUDE_HEADERS,
@@ -217,7 +218,7 @@ async function callClaude(history, jobsInfo, model, persona) {
  *
  * Returns the same shape as callClaude so both paths stay interchangeable.
  */
-async function callClaudeStream(history, jobsInfo, model, persona, onText) {
+async function callClaudeStream(history, jobsInfo, model, persona, onText, detail = '') {
   // Both transports expose an async-iterable body: WHATWG fetch a ReadableStream,
   // the proxy tunnel a Node IncomingMessage. The loop below reads either.
   const open = (opts) => pfetch('https://api.anthropic.com/v1/messages', {
@@ -225,7 +226,7 @@ async function callClaudeStream(history, jobsInfo, model, persona, onText) {
     body: chatBody(history, jobsInfo, model, persona, true, opts),
   });
 
-  let opts = {};
+  let opts = { detail };
   let r = await open(opts);
   while (!r.ok) {
     const detail = await r.text().catch(() => '');
@@ -389,7 +390,34 @@ const server = http.createServer(async (req, res) => {
       // The postings come from the database, scoped to the centre's own region —
       // not from whatever the browser sends. A kiosk opened without a token (the
       // static demo) still falls back to the list it was given.
-      const jobsInfo = await jobsForCenter(persona, jobs, history);
+      // 어르신이 방금 물으신 것에 걸리는 대목만 꺼내 옵니다 (retrieval.js).
+      //
+      // 요약(facts)은 언제나 프롬프트에 들어가 있습니다 — 그것만으로는 강좌
+      // 서른 개 중 세 개를 골라 말할 수 없어서, 질문을 보고 그때 필요한 조각을
+      // 더해 줍니다. 조각이 없거나 찾다가 실패해도 요약은 그대로이므로,
+      // 이 줄이 대화를 멈추게 하는 일은 없습니다.
+      //
+      // The summary always travels; it cannot name three of thirty courses, so
+      // the pieces that match this question are added on top. If retrieval finds
+      // nothing or fails, the summary still answers — this line never costs the
+      // conversation.
+      const lastAsked = [...(history || [])].reverse()
+        .find((m) => m && m.role === 'user' && m.content);
+
+      // 둘을 나란히 물어봅니다 — 서로 기다릴 이유가 없습니다.
+      //
+      // 둘 다 데이터베이스를 한 번씩 다녀오고, 재어 보니 한 번에 350ms 안팎이
+      // 걸립니다(서버리스 Postgres 왕복). 차례로 하면 어르신은 말을 마치고
+      // 0.7초를 더 기다리십니다. §3-6 이 말하는 '한 박자 늦는 대화' 가 정확히
+      // 이렇게 만들어집니다.
+      //
+      // Both are one database round trip, measured at ~350ms each against
+      // serverless Postgres. In series that is 0.7s of silence after the senior
+      // stops speaking, which is exactly how §3-6's "beat too slow" is built.
+      const [jobsInfo, detail] = await Promise.all([
+        jobsForCenter(persona, jobs, history),
+        lastAsked ? retrieval.forQuestion(persona, String(lastAsked.content)) : '',
+      ]);
 
       // Claude answers with a 1-based index into the service list we sent it —
       // an index it cannot get wrong the way it could invent a code. Resolve it
@@ -428,7 +456,7 @@ const server = http.createServer(async (req, res) => {
         const line = (obj) => res.write(JSON.stringify(obj) + '\n');
         try {
           const out = await callClaudeStream(history || [], jobsInfo, chosen, persona,
-            (text) => line({ t: text }));
+            (text) => line({ t: text }), detail);
           line({ done: true, ...attach(out) });
         } catch (e) {
           line({ done: true, error: String(e.message || e) });
@@ -437,7 +465,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       return json(res, 200, attach(
-        await callClaude(history || [], jobsInfo, chosen, persona)));
+        await callClaude(history || [], jobsInfo, chosen, persona, detail)));
     }
     if (u.pathname === '/tts' && req.method === 'POST') {
       const { text, c } = JSON.parse((await readBody(req)).toString() || '{}');

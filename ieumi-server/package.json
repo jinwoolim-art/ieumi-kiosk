@@ -13,6 +13,7 @@
     "sync-jobs": "node db/sync-jobs.js",
     "sync-sources": "node db/sync-sources.js",
     "check-links": "node check-links.js",
+    "check-datago": "node check-datago.js",
     "relay": "node korea-relay.js"
   },
   "dependencies": {

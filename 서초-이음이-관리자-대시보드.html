@@ -858,6 +858,12 @@ function renderPrio() {
           '<span style="color:' + S[2] + ';font-weight:700">' + S[0] + ' ' + S[1] + '</span>' +
           (s.source_at ? ' <span class="alt">' + esc(s.source_at) + '</span>' : '') +
           (s.source_chars ? ' <span class="alt">· ' + s.source_chars + (inEn ? ' chars' : '자') + '</span>' : '') +
+          // 얼마나 깊이 읽었는지. '읽었다' 와 '강좌표까지 읽었다' 는 다릅니다 —
+          // 대문만 읽은 서비스는 어르신이 물어야만 그 사실이 드러납니다.
+          // Read is not the same as read deeply enough to name a course; without
+          // this, the difference only surfaces when a senior asks and gets nothing.
+          (Number(s.source_pages) ? ' <span class="alt">· ' + (inEn ? '+' + s.source_pages + ' pages' : '+' + s.source_pages + '장') + '</span>' : '') +
+          (Number(s.source_chunks) ? ' <span class="alt">· ' + s.source_chunks + (inEn ? ' pieces' : ' 조각') + '</span>' : '') +
           (s.source_error ? ' <span class="alt">· ' + esc(s.source_error) + '</span>' : '') +
           (link ? ' <button class="pedit" data-src="' + esc(s.id) + '">' + (inEn ? 'read it again now' : '지금 다시 읽기') + '</button>' : '') +
           ((s.source_facts || s.source_facts_en)

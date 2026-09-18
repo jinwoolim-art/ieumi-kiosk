@@ -45,25 +45,36 @@ const FETCH_MS = 40_000;   // 한국 공공기관 서버는 느립니다 — 25�
 // without a retry a service simply goes without facts for the day over a blip.
 const RETRIES = 3;
 
-async function fetchPage(url, attempt = 0) {
-  try {
-    return await fetchOnce(url);
-  } catch (e) {
-    const why = String((e.cause && (e.cause.code || e.cause.message)) || e.message || '');
-    // EAI_AGAIN 은 DNS 가 잠깐 안 되는 것이고, 나머지는 연결이 끊긴 것입니다.
-    // 둘 다 다음 번에는 되는 일이 흔합니다 — 실제로 sync 에서 실패한 주소를 손으로
-    // 열어 보면 HTTP 200 이 나오는 경우가 여럿 있었습니다.
-    //
-    // Sites that failed during a sync answered HTTP 200 when poked by hand
-    // moments later. One retry was not enough; these hosts are simply slow and
-    // drop connections under any load.
-    const transient = /timeout|abort|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR|socket|network|fetch failed/i
-      .test(why);
-    if (attempt < RETRIES - 1 && transient) {
+// 다시 시도할 만한 실패인가 — EAI_AGAIN 은 DNS 가 잠깐 안 되는 것이고, 나머지는
+// 연결이 끊긴 것입니다. 둘 다 다음 번에는 되는 일이 흔합니다.
+const TRANSIENT =
+  /timeout|abort|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR|socket|network|fetch failed/i;
+
+/**
+ * 한 페이지를 받아옵니다. `tries` 로 몇 번까지 다시 해 볼지 정합니다.
+ *
+ * 카탈로그에 적힌 대문은 세 번까지 기다려 줍니다 — 그 한 장을 놓치면 그 서비스가
+ * 그날 하루 통째로 비기 때문입니다. 반면 <따라간 페이지는 한 번만> 해 봅니다.
+ * 없어도 대문이 답하고, 어제 읽어 둔 것도 그대로 남아 있습니다.
+ *
+ * 재어 보고 정한 값입니다. 처음에는 모든 페이지를 세 번씩 시도했는데, 느린
+ * 기관 한 곳에서 한 서비스가 <11분 40초> 걸렸습니다. 하위 페이지 하나가 세 번씩
+ * 시간 초과를 기다린 탓이었습니다. 대부분의 서비스는 22~52초입니다.
+ *
+ * The front door gets three attempts: losing it empties the service for the day.
+ * A page we chose to follow gets one — the front door still answers without it,
+ * and yesterday's copy is still on file. Measured: retrying everything three
+ * times made one slow institution take 11m40s against a 22–52s norm.
+ */
+async function fetchPage(url, { tries = RETRIES } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetchOnce(url);
+    } catch (e) {
+      const why = String((e.cause && (e.cause.code || e.cause.message)) || e.message || '');
+      if (attempt >= tries - 1 || !TRANSIENT.test(why)) throw e;
       await new Promise((ok) => setTimeout(ok, 2000 * (attempt + 1)));
-      return fetchPage(url, attempt + 1);
     }
-    throw e;
   }
 }
 
@@ -208,6 +219,257 @@ async function fetchOnce(url) {
   return { httpStatus: r.status, html, error: null };
 }
 
+// ------------------------------------------------------------ ①-b 한 걸음 더
+//
+// 카탈로그의 주소는 대개 <대문>입니다. 대문에는 운영시간과 전화번호가 있고,
+// 어르신이 실제로 물으시는 것 — 무슨 강좌가 있나, 몇 시에 하나, 얼마인가 — 은
+// 한 번 더 눌러야 나오는 곳에 있습니다.
+//
+// 2026-09-18 클라이언트 지적이 정확히 이것이었습니다. 서초50플러스센터 강좌를
+// 세 개 소개해 달라는 질문에 이음이가 답하지 못했는데, 원인은 수집이 고장난 것이
+// 아니라 /sch/index.do (대문, 2,208자) 만 읽고 /sch/education.do (강좌표, 3,241자) 는
+// 아무도 열어 보지 않았다는 것이었습니다. 강좌표 쪽은 <이미 있던 코드로> 멀쩡히
+// 읽힙니다. 카탈로그 링크 일흔 개 중 스물다섯 개가 같은 모양입니다.
+//
+// The catalogue points at front doors. Hours and a phone number live there; what
+// a senior actually asks — which courses, what time, how much — is one click
+// deeper. Measured on the client's own example: the front door gave 2,208
+// characters of opening hours, and the course table one link away gave 3,241
+// characters of exactly what was asked for, through the code that already
+// shipped. Nobody had ever followed the link.
+//
+// 한 걸음만 갑니다. 두 걸음부터는 기관 홈페이지 전체를 긁는 일이 되고, 그것은
+// 공개 페이지를 하루 한 번 읽는 것과 다른 이야기입니다.
+// One hop only. Two would be crawling the whole site, which is a different thing
+// from reading a handful of public pages once a day.
+const SUBPAGE_MAX = Number(env.SUBPAGE_MAX || 4);
+
+// 어떤 링크를 따라갈 것인가 — 어르신이 물으시는 것이 있을 만한 곳.
+// 점수가 높을수록 먼저 갑니다. 글자는 링크 이름에서, 그다음 주소에서 찾습니다.
+const SUBPAGE_WORDS = [
+  [3, /강좌|프로그램|시간표|교육과정|수강|커리큘럼|program|course|class|schedule|curriculum|lecture|education|edu\b/i],
+  [2, /모집|접수|신청|이용안내|이용방법|사업안내|사업소개|행사|일정|apply|apply\.do|guide/i],
+  [1, /안내|공지|서비스|지원|소식|알림|notice|board|bbs|news/i],
+];
+
+// 따라가도 얻을 것이 없는 곳 — 로그인, 약관, 사이트맵.
+const SUBPAGE_SKIP =
+  /로그인|회원가입|아이디|비밀번호|개인정보|이용약관|저작권|사이트맵|이메일무단|찾아오시는|오시는\s*길|login|logout|join|member|privacy|terms|sitemap|search/i;
+
+// 글이 아닌 것은 이 길로 읽지 않습니다 (PDF·한글파일은 다른 일입니다).
+const NOT_A_PAGE = /\.(pdf|hwp|hwpx|docx?|xlsx?|pptx?|zip|rar|jpe?g|png|gif|webp|mp4|mp3)(\?|$)/i;
+
+/** jsessionid 같은 세션 부스러기를 떼어 냅니다 — 같은 페이지가 여러 번 잡힙니다. */
+function tidyUrl(u) {
+  try {
+    const x = new URL(u);
+    x.hash = '';
+    x.pathname = x.pathname.replace(/;jsessionid=[^/?]*/i, '');
+    for (const k of ['jsessionid', 'JSESSIONID', 'PHPSESSID']) x.searchParams.delete(k);
+    return x.toString();
+  } catch { return null; }
+}
+
+/**
+ * 대문에서 따라갈 만한 링크를 고릅니다.
+ *
+ * 같은 기관 안에서만 움직입니다. 중계 서버의 허용 목록이 도메인 단위라, 다른
+ * 도메인으로 넘어가면 어차피 거절당합니다 — 그리고 그래야 맞습니다.
+ */
+function pickSubpages(html, baseUrl, { max = SUBPAGE_MAX } = {}) {
+  let base;
+  try { base = new URL(baseUrl); } catch { return []; }
+  const here = tidyUrl(baseUrl);
+  const seen = new Map();
+
+  for (const m of (html || '').matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]{0,200}?)<\/a>/gi)) {
+    const raw = m[1].trim();
+    if (!raw || /^(#|javascript:|mailto:|tel:)/i.test(raw)) continue;
+    if (NOT_A_PAGE.test(raw)) continue;
+
+    let abs;
+    try { abs = tidyUrl(new URL(raw, base).toString()); } catch { continue; }
+    if (!abs || abs === here) continue;
+
+    const target = new URL(abs);
+    if (target.hostname.toLowerCase() !== base.hostname.toLowerCase()) continue;
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') continue;
+
+    const label = m[2].replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+    if (SUBPAGE_SKIP.test(label) || SUBPAGE_SKIP.test(target.pathname + target.search)) continue;
+
+    // 링크 이름이 본문, 주소는 거들 뿐 — 주소만 맞는 것은 대개 메뉴 찌꺼기입니다.
+    let score = 0;
+    for (const [w, re] of SUBPAGE_WORDS) {
+      if (re.test(label)) score += w * 2;
+      else if (re.test(decodeURIComponent(target.pathname + target.search))) score += w;
+    }
+    if (!score) continue;
+
+    const prev = seen.get(abs);
+    if (!prev || prev.score < score) seen.set(abs, { url: abs, title: label.slice(0, 120), score });
+  }
+
+  return [...seen.values()].sort((a, b) => b.score - a.score).slice(0, max);
+}
+
+// ------------------------------------------------------------ ①-c 그림 읽기
+//
+// 어떤 것은 글로 존재하지 않습니다.
+//
+// 방배느티나무쉼터의 '프로그램 시간표' 페이지는 486자이고, 그 486자가 <전부
+// 메뉴입니다.> 10월 시간표는 JPG 한 장으로만 있습니다 — 요일, 시간, 층, 과목이
+// 전부 그림 안에 있습니다. 링크를 아무리 고쳐도, 브라우저로 아무리 잘 그려도
+// 닿지 않습니다. 눈으로 보는 수밖에 없습니다.
+//
+// 클라이언트가 빨간 원으로 표시한 그 표입니다. 실제로 읽어 보았습니다: 월~금,
+// 어울림터·배움터·나눔터 세 곳, 시간대별 과목이 그대로 나옵니다. 폐강 기준과
+// 신청 전화번호까지 같이 나옵니다.
+//
+// Some of this exists only as a picture. Bangbae's timetable page is 486
+// characters and every one is navigation; the October schedule is a single JPG.
+// No link fix and no renderer reaches it. Read as an image it comes back whole —
+// five days, three rooms, every slot, the cancellation rule and the phone number.
+const IMAGE_MAX = Number(env.IMAGE_MAX || 4);
+const MIN_IMAGE_BYTES = Number(env.MIN_IMAGE_BYTES || 25_000);
+const MAX_IMAGE_BYTES = Number(env.MAX_IMAGE_BYTES || 3_500_000);   // base64 로 5MB 한도 안쪽
+
+// 글이 이만큼도 안 되면 그림을 봅니다 — 방배느티나무쉼터는 대문 1,039자 +
+// 시간표 페이지 486자 = 1,525자였고, 그 안에 시간표는 한 글자도 없었습니다.
+const VISION_TEXT_FLOOR = Number(env.VISION_TEXT_FLOOR || 2500);
+
+// 장식은 건너뜁니다. 로고가 52KB 인 곳이 있어서 크기만으로는 갈라지지 않습니다 —
+// 어디에 놓여 있는지를 함께 봅니다.
+// Size alone does not separate them: one site's logo is 52KB. Where the file sits
+// says more than how big it is.
+const IMAGE_SKIP =
+  /\/(images\/site|images\/common|common|icon|icons|btn|button|layout|skin|quick_?menu)\//i;
+const IMAGE_SKIP_NAME =
+  /(icon|btn_|button|arrow|bullet|sprite|spacer|blank|logo|thumb|thumbnail|noimage|bg_|_bg|dot_|line_)/i;
+
+// 본문·첨부 자리. webimage 를 <넣지 않는 것이> 중요합니다 — 이 CMS 에서는 그것이
+// 모든 그림의 뿌리라서, 넣으면 로고도 퀵메뉴 아이콘도 포스터와 같은 점수를 받습니다.
+// 실제로 그렇게 되어서, 방배느티나무쉼터에서 그림 예산 세 장을 퀵메뉴 아이콘으로
+// 전부 쓰고 정작 시간표 포스터에는 닿지 못했습니다.
+//
+// Deliberately not /webimage/: in this CMS that is the root of every image, so
+// including it scored the logo and the quick-menu icons level with the poster.
+// Measured: the whole image budget went on menu icons and the timetable — the one
+// thing on the site worth reading — was never reached.
+const IMAGE_LIKELY =
+  /\/(editor|upload|uploads|attach|attachment|files?|data|bbs|board|popup|photo|media|content)\//i;
+const IMAGE_EXT = /\.(jpe?g|png|gif|webp)(\?|$)/i;
+
+/**
+ * 읽어 볼 만한 그림을 고릅니다.
+ *
+ * 크기는 여기서 거르지 않습니다 — 받아 봐야 알 수 있고, 받아 본 뒤에 거릅니다.
+ * 여기서는 <놓인 자리와 이름>으로만 거릅니다.
+ */
+function pickImages(html, baseUrl, { max = IMAGE_MAX } = {}) {
+  let base;
+  try { base = new URL(baseUrl); } catch { return []; }
+  const seen = new Map();
+
+  const consider = (raw, label) => {
+    if (!raw || !IMAGE_EXT.test(raw)) return;
+    let abs;
+    try { abs = tidyUrl(new URL(raw.trim(), base).toString()); } catch { return; }
+    if (!abs) return;
+    const target = new URL(abs);
+    if (target.hostname.toLowerCase() !== base.hostname.toLowerCase()) return;
+
+    // 이름만 보아서는 모자랍니다 — 방배느티나무쉼터의 로고는 파일 이름이
+    // '20210421150441000862.png' 이고, 'logo' 는 <폴더> 이름에만 있습니다.
+    // 게다가 52KB 라 크기로도 걸러지지 않습니다. 길 전체를 봅니다.
+    // The filename alone is not enough: one site's logo is called
+    // 20210421150441000862.png and is 52KB — only its folder says "logo".
+    const p = decodeURIComponent(target.pathname);
+    if (IMAGE_SKIP.test(p) || IMAGE_SKIP_NAME.test(p)) return;
+
+    // 본문·첨부 자리에 있는 그림을 먼저 봅니다. 그 밖의 것도 후보이긴 합니다.
+    const score = IMAGE_LIKELY.test(p) ? 2 : 1;
+    const prev = seen.get(abs);
+    if (!prev || prev.score < score) {
+      seen.set(abs, { url: abs, title: (label || '').replace(/\s+/g, ' ').trim().slice(0, 120), score });
+    }
+  };
+
+  for (const m of (html || '').matchAll(/<img\b[^>]*>/gi)) {
+    const tag = m[0];
+    const src = (tag.match(/\bsrc=["']([^"']+)["']/i) || [])[1]
+             || (tag.match(/\bdata-src=["']([^"']+)["']/i) || [])[1];
+    const alt = (tag.match(/\balt=["']([^"']*)["']/i) || [])[1] || '';
+    consider(src, alt);
+  }
+  // 포스터를 원본 크기로 여는 링크도 그림입니다.
+  for (const m of (html || '').matchAll(/<a\b[^>]*href=["']([^"']+\.(?:jpe?g|png|gif|webp))["']/gi)) {
+    consider(m[1], '');
+  }
+
+  return [...seen.values()].sort((a, b) => b.score - a.score).slice(0, max);
+}
+
+/** 그림 한 장을 바이트 그대로 받아옵니다 — 중계도 그대로 통과시켜 줍니다. */
+async function fetchBinary(url) {
+  const r = RELAY ? await relayFetch(url) : await directFetch(url);
+  const ok2xx = r.status >= 200 && r.status < 300;
+  if (!ok2xx) return { httpStatus: r.status, buf: null, type: r.type, error: 'HTTP ' + r.status };
+  if (!/^image\//i.test(r.type)) {
+    return { httpStatus: r.status, buf: null, type: r.type, error: 'not an image (' + String(r.type).split(';')[0] + ')' };
+  }
+  return { httpStatus: r.status, buf: r.buf, type: r.type.split(';')[0].trim().toLowerCase(), error: null };
+}
+
+const VISION_SYSTEM = `You are looking at one image from a Korean public-service or senior-welfare website. It is usually a poster, a timetable, a price list or a notice.
+
+Transcribe what it says. Write it out so that someone who cannot see the image knows everything it tells them.
+
+Rules:
+- Write in Korean, exactly as the image words it. Do not translate, do not paraphrase, do not summarise.
+- A timetable is the whole point: give every day, every time slot, every room and every programme name. Write one line per entry, like "월 10:00-10:50 어울림터 전신스트레칭". Never write "etc." and never skip a row for brevity.
+- Keep every number exactly: times, fees, capacities, phone numbers, dates, deadlines.
+- Keep footnotes and conditions — cancellation rules, who may apply, what to bring.
+- If the image is decoration with no information in it (a logo, a photograph of people, a banner with only a slogan), reply with exactly: NOTHING
+
+Begin with one line naming what the image is, then the contents. No commentary.`;
+
+/**
+ * 그림 한 장을 글로 옮깁니다.
+ *
+ * 요약이 아니라 <받아쓰기>입니다. 시간표를 요약하면 시간표가 아니게 됩니다 —
+ * 어르신이 물으시는 것은 언제나 "목요일 두 시에 뭐 하나" 처럼 한 칸이기 때문에,
+ * 어느 칸을 버릴지 미리 고를 수가 없습니다.
+ *
+ * Transcription, not summary: a summarised timetable stops being a timetable, and
+ * the question is always about one cell of it.
+ */
+async function describeImage(service, img, buf, mediaType) {
+  if (!env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set');
+  const r = await pfetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01',
+               'content-type': 'application/json' },
+    timeoutMs: 180_000,
+    body: JSON.stringify({
+      model: env.VISION_MODEL || env.SOURCE_MODEL || 'claude-sonnet-5',
+      max_tokens: 3000,
+      system: VISION_SYSTEM,
+      thinking: { type: 'disabled' },
+      messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: mediaType, data: buf.toString('base64') } },
+        { type: 'text', text: `기관: ${service.org || ''}\n서비스: ${service.sub || ''}`
+          + (img.title ? `\n그림 설명: ${img.title}` : '') },
+      ] }],
+    }),
+  });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message);
+  const out = ((j.content && j.content[0] && j.content[0].text) || '').trim();
+  return /^NOTHING\b/i.test(out) ? '' : out;
+}
+
 // ---------------------------------------------------------------- ② 글만 추리기
 //
 // 표가 핵심입니다. 탐님이 빨간 원으로 표시한 것이 바로 표였습니다 — 가구원수별
@@ -252,16 +514,32 @@ function extractText(html) {
 }
 
 // ---------------------------------------------------------------- ③ 사실만 요약
-const SUMMARY_SYSTEM = `You read one Korean public-service web page and write down only the facts an elderly caller would act on.
+// 요약이 무엇을 남기고 무엇을 버리는지가, 이음이가 무엇에 답할 수 있는지를
+// 그대로 정합니다.
+//
+// 2026-09-18 이전의 이 목록에는 <강좌와 프로그램이 없었습니다.> 금액·자격·신청
+// 방법·운영시간·전화번호만 남기라고 되어 있었고, 게다가 "메뉴나 공지 목록이면
+// NOTHING 이라고 답하라"고 했습니다. 강좌표는 공지 목록처럼 생겼습니다. 그래서
+// 링크를 제대로 고쳐 강좌표를 읽어 와도, 이 단계에서 다시 버려졌을 것입니다.
+//
+// Until 2026-09-18 this list did not mention courses or programmes at all — and
+// it told the model to answer NOTHING for "a notice list", which is exactly what
+// a course table looks like. Fixing the links without fixing this would have
+// thrown the courses away one step later, invisibly.
+const SUMMARY_SYSTEM = `You read the public pages of one Korean public-service or senior-welfare organisation and write down what an elderly caller would act on.
+
+The material may hold several pages and the transcription of posters or timetables. Treat it as one body of knowledge about one organisation.
 
 Write TWO sections, in this exact format and nothing else:
 
 [KO]
-<Korean, 3-10 short lines>
+<Korean, 5-20 short lines>
 [EN]
 <the same lines in English>
 
-What to keep, when the page states it:
+What to keep, when the material states it:
+- 강좌·프로그램 이름 / the names of courses and programmes actually on offer, with their day and time when given ("월 10:00 전신스트레칭"), their fee (수강료) and their capacity (정원)
+- 모집기간·교육기간 / when applications open and close, when the course runs
 - 지원금액 / amounts, including per-household-size tables (write them out: "1인 30만원, 2인 40만원, …")
 - 자격 / who qualifies, income thresholds
 - 신청 방법 / how to apply, what to bring
@@ -270,26 +548,37 @@ What to keep, when the page states it:
 - 지원 종류 / what kinds of help exist
 
 Rules:
-- ONLY what the page actually says. Never infer, never round, never fill a gap. If the page does not give amounts, do not mention amounts.
+- ONLY what the material actually says. Never infer, never round, never fill a gap. If it does not give amounts, do not mention amounts.
 - Keep numbers exactly as written, with their units (만원, %, 세, 시).
+- A list of courses is CONTENT, not navigation. When the material holds a course or programme list, name as many as you can fit — the specific ones, with fees and times — rather than writing "various programmes are offered". "여러 프로그램이 있습니다" is the single least useful thing you could write here.
+- Where a course list is long, give the most useful ones and end with a line saying how many there are in total ("이 밖에도 2학기 강좌가 모두 32개 있습니다").
+- But that instruction is about what to KEEP, never about what to SUPPLY. If the material mentions a timetable, a programme or a price list without giving its contents, write that it exists and that the contents are not stated. Do NOT reconstruct it. Never write a course name, a day, a time or a fee that is not written in the material in front of you — not even one you are confident about, not even one you have seen on this organisation's site before. A plausible invented timetable is worse than no timetable: it will be right often enough to be believed and wrong with no warning, and the person who finds out is standing outside a locked door.
+- When a section of the material is a menu with no content behind it, that is a fact about the page, not a gap for you to close.
 - No marketing sentences, no site navigation, no "click here".
 - Each line must stand on its own when read aloud to someone in their 80s.
-- If the page carries nothing a caller could act on (a menu, a notice list, a login wall), reply with exactly: NOTHING
+- If the material carries nothing a caller could act on (only a menu or a login wall), reply with exactly: NOTHING
 
 Do not add commentary before or after the two sections.`;
+
+// 한 서비스의 자료를 한 번에 봅니다 — 대문, 따라간 페이지들, 그림에서 옮겨 적은
+// 글까지. 여러 장이 되었으니 예전 24,000자로는 강좌표 한 장에 다 먹힙니다.
+const SUMMARY_CHARS = Number(env.SUMMARY_CHARS || 40_000);
 
 async function summarise(service, text) {
   if (!env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set');
   const head = `서비스: ${service.sub}\n설명: ${service.description || ''}\n기관: ${service.org || ''}\n\n---- 페이지 내용 ----\n`;
-  const body = text.slice(0, 24_000);
+  const body = text.slice(0, SUMMARY_CHARS);
 
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
+  // pfetch: 프록시 뒤에서도 닿아야 합니다 — node 의 fetch 는 HTTPS_PROXY 를
+  // 무시합니다 (proxy-fetch.js 의 이유와 같습니다).
+  const r = await pfetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01',
                'content-type': 'application/json' },
+    timeoutMs: 180_000,
     body: JSON.stringify({
       model: env.SOURCE_MODEL || 'claude-sonnet-5',
-      max_tokens: 1200,
+      max_tokens: 2000,
       system: SUMMARY_SYSTEM,
       messages: [{ role: 'user', content: head + body }],
       thinking: { type: 'disabled' },
@@ -303,6 +592,219 @@ async function summarise(service, text) {
   const ko = (out.match(/\[KO\]\s*([\s\S]*?)(?=\[EN\]|$)/) || [])[1] || '';
   const en = (out.match(/\[EN\]\s*([\s\S]*)$/) || [])[1] || '';
   return { ko: ko.trim(), en: en.trim() };
+}
+
+// ------------------------------------------------------- ③-b 지어낸 줄 걸러내기
+//
+// 2026-09-18, 이 층을 처음 돌린 날 잡힌 것입니다.
+//
+// 방배느티나무쉼터 요약에 <주간 시간표 전체>가 들어왔습니다. 월요일 시니어발레,
+// 화요일 요가교실, 수요일 K-트롯댄스… 그럴듯한 정도가 아니라 <실제 포스터와
+// 거의 맞았습니다.> 그런데 읽어 온 3,211자 어디에도 '시니어발레' 는 없었습니다.
+// 모델이 지어냈고, 지어낸 것이 맞았습니다.
+//
+// 맞았다는 점이 더 나쁩니다. 대부분 맞으면 믿게 되고, 틀린 날에는 아무 표시도
+// 나지 않습니다. 어르신이 화요일 열 시에 헛걸음을 하고 나서야 압니다.
+//
+// Caught on the first real run of this layer: the summary of Bangbae came back
+// holding a full weekly timetable — ballet on Monday, yoga on Tuesday — and it
+// very nearly matched the real poster. The word 시니어발레 appears nowhere in the
+// 3,211 characters that were actually read. The model invented it, and was right.
+//
+// Being right is the worse outcome. A fabrication that is usually correct earns
+// trust and then fails silently, and the person who finds out is an 84-year-old
+// standing outside a locked room on a Tuesday morning.
+//
+// 그래서 요약을 <읽어 온 글에 대고 검사합니다.> 한 줄의 낱말 대부분이 원문에
+// 없으면 그 줄은 버립니다. 이 검사는 모델을 부르지 않습니다.
+const GROUND_MIN = Number(env.GROUND_MIN || 0.6);
+
+// 문법 부스러기는 세지 않습니다 — 어느 글에나 있어서 점수를 부풀립니다.
+const GRAMMAR = /^(입니다|있습니다|합니다|됩니다|드립니다|이며|이고|하며|에서|으로|그리고|또는|등이|등은|등을|경우|가능|대해|대한|통해|위해|모두|각각|기타|안내|이용|운영|관련|제공|실시|진행|참여|신청|문의|확인|해당|다음|아래|이상|이하|정도|또한|하지만|따라|보다|만약|무엇|어떤|이런|그런|저런)$/;
+
+/**
+ * 이 낱말이 원문에 있는가 — 조사 한 글자까지만 떼고 봅니다.
+ *
+ * 처음에는 세 글자까지 떼어 가며 찾았습니다. 그랬더니 두 글자짜리 토막이 2,700자
+ * 짜리 한국어 문서에서는 거의 언제나 어딘가에 걸렸고, 지어낸 시간표 한 줄이
+ * 낱말 마흔넷 중 마흔이 '근거 있음' 으로 나와 그대로 통과했습니다. 느슨한 검사는
+ * 검사가 아닙니다.
+ *
+ * Stripping up to three characters made the check useless: a two-character stem
+ * lands somewhere in any 2,700-character Korean document, and the fabricated
+ * timetable scored 40 of 44 words "grounded" and sailed through. A check that
+ * loose is not a check.
+ */
+const grounded = (word, hay) =>
+  hay.includes(word) || (word.length >= 3 && hay.includes(word.slice(0, -1)));
+
+// 서술어 어미를 뗍니다.
+//
+// '안내입니다' 는 '안내' 에 '입니다' 가 붙은 것이고, 홈페이지에는 '안내' 로만
+// 적혀 있습니다. 어미째로 찾으면 영영 못 만납니다. 떼고 남은 것이 두 글자
+// 이하면 내용어가 아니므로 아예 세지 않습니다 — '운영됩니다' 의 '운영' 처럼
+// 어느 기관 페이지에나 있는 말이 점수를 채우는 것을 막습니다.
+const PREDICATE = /(입니다|습니다|합니다|됩니다|드립니다|십니다|합니까|됩니까|랍니다|답니다)$/;
+function contentWord(w) {
+  const m = w.match(PREDICATE);
+  if (!m) return w;
+  const stem = w.slice(0, -m[0].length);
+  return stem.length >= 3 ? stem : null;
+}
+
+/**
+ * 글에서 숫자 덩어리만 뽑습니다.
+ *
+ * 글자 그대로 맞춰 보면 안 됩니다. 요약은 숫자를 <다시 적습니다>: 홈페이지의
+ * '2026.09.18 ~2026.10.07' 이 요약에서는 '09.18~10.07' 이 됩니다. 같은 날짜인데
+ * 글자로는 다릅니다. 처음에 글자로 맞췄더니 서초50플러스센터 강좌 열 줄이
+ * 전부 '근거 없음' 으로 잘려 나갔습니다 — 그 열 줄이야말로 이번에 새로 얻은
+ * 것이었는데도요.
+ *
+ * 그래서 숫자를 덩어리로 쪼개 견줍니다. 09.18~10.07 → 09, 18, 10, 07. 구분
+ * 기호와 연도 표기가 달라도 같은 날짜로 만납니다.
+ *
+ * Literal matching fails because a summary rewrites its numbers: the page's
+ * "2026.09.18 ~2026.10.07" becomes "09.18~10.07". Matching by string dropped all
+ * ten of the new course lines — exactly what this work was for. Comparing digit
+ * groups lets the same date meet itself across different separators.
+ */
+function digitGroups(s) {
+  const out = new Set();
+  const flat = String(s || '').replace(/(?<=\d),(?=\d)/g, '');   // 30,000 → 30000
+  for (const m of flat.matchAll(/\d+/g)) if (m[0].length >= 2) out.add(m[0]);
+  return out;
+}
+
+/**
+ * 한 줄이 읽어 온 글에 근거가 있는가.
+ *
+ * 두 가지를 봅니다.
+ *
+ * ① 숫자는 <전부> 맞아야 합니다. 금액과 시각이야말로 어르신이 그대로 믿고
+ *    움직이시는 것이고, 하나만 틀려도 헛걸음이 됩니다.
+ *
+ * ② 낱말은 <흔치 않은 것만> 셉니다 — 세 글자 이상. '이용', '운영', '안내'
+ *    같은 두 글자 말은 어느 기관 페이지에나 있어서, 세어 봐야 지어낸 줄과
+ *    옮겨 적은 줄을 가르지 못합니다. 가르는 것은 이름입니다: '시니어발레',
+ *    '보타니컬아트', '셔플댄스' 처럼 그 기관에만 있는 말이 원문에 있느냐.
+ *
+ * Only distinctive words count — three characters or more. Two-character words
+ * like 이용/운영/안내 appear on every institutional page in Korea and separate
+ * nothing. What separates a transcribed line from an invented one is the names:
+ * 셔플댄스 is either written on the page or it is not.
+ */
+function lineIsGrounded(line, hay, hayNums) {
+  const nums = hayNums || digitGroups(hay);
+  const lineNums = digitGroups(line);
+  for (const n of lineNums) if (!nums.has(n)) return false;
+
+  const rare = (line.match(/[가-힣]{3,}/g) || [])
+    .map(contentWord).filter(Boolean)
+    .filter((w) => !GRAMMAR.test(w));
+  for (const n of lineNums) if (n.length >= 3) rare.push(n);
+  if (!rare.length) return true;                  // 숫자만 있는 줄은 ①에서 봤습니다
+
+  const hits = rare.filter((w) => grounded(w, hay)).length;
+  return hits / rare.length >= GROUND_MIN;
+}
+
+/**
+ * 요약에서 근거 없는 줄을 걷어냅니다.
+ *
+ * 영어 줄은 한국어 줄과 <같은 순서>로 나오도록 프롬프트가 요구합니다. 줄 수가
+ * 맞으면 같은 자리를 함께 버립니다. 맞지 않으면 영어는 숫자만 검사합니다 —
+ * 숫자는 언어를 타지 않고, 가장 위험한 것도 숫자입니다.
+ */
+function dropUngrounded(facts, sourceText) {
+  const hay = sourceText || '';
+  const hayNums = digitGroups(hay);
+  const ko = (facts.ko || '').split('\n');
+  const en = (facts.en || '').split('\n');
+  const keep = ko.map((l) => !l.trim() || lineIsGrounded(l, hay, hayNums));
+  const dropped = keep.filter((k) => !k).length;
+
+  const koOut = ko.filter((_, i) => keep[i]).join('\n').trim();
+  const enOut = (ko.length === en.length
+    ? en.filter((_, i) => keep[i])
+    : en.filter((l) => [...digitGroups(l)].every((n) => hayNums.has(n))))
+    .join('\n').trim();
+
+  return { ko: koOut, en: enOut, dropped };
+}
+
+// ---------------------------------------------------------------- ④ 조각내기
+//
+// 요약은 <질문을 알기 전에> 무엇을 남길지 고르는 일입니다. 강좌가 서른 개 있는
+// 표를 열 줄로 줄이면, 어느 열 줄을 고르든 스무 개는 사라집니다. 그런데 어르신이
+// 어느 강좌를 물으실지는 그때 가야 압니다.
+//
+// 그래서 요약은 요약대로 두고 (언제나 프롬프트에 들어갑니다), 원문은 조각으로
+// 잘라 두었다가 질문이 들어온 뒤에 겹치는 조각만 꺼내 씁니다.
+//
+// Summarising is choosing what to keep before the question exists. A thirty-row
+// course table compressed to ten lines loses twenty courses, and which twenty
+// matter is not knowable until someone asks. So the summary stays, and the page
+// is also kept in pieces that can be fetched once the question is known.
+const CHUNK_CHARS = Number(env.CHUNK_CHARS || 900);
+const TABLE_ROWS = Number(env.CHUNK_TABLE_ROWS || 8);
+
+/**
+ * 읽어 온 글을 조각으로 자릅니다.
+ *
+ * 표는 <줄 단위로> 자르되 머리글을 조각마다 다시 붙입니다. 머리글이 없는 표
+ * 조각은 숫자만 늘어선 것이나 마찬가지입니다 — '30,000원' 이 수강료인지
+ * 지원금인지 알 수 없게 됩니다. 되풀이되는 한 줄이 아깝지 않은 이유입니다.
+ *
+ * A table is cut by rows with its header repeated into every piece: a table
+ * fragment without its header is a row of numbers with nothing saying what they
+ * count, and "30,000원" could be a fee or a subsidy.
+ */
+function chunkText(text, { maxChars = CHUNK_CHARS, tableRows = TABLE_ROWS } = {}) {
+  const out = [];
+  const push = (heading, body) => {
+    const b = (body || '').trim();
+    if (b.length < 20) return;                     // 부스러기는 담지 않습니다
+    out.push({ ord: out.length, heading: (heading || '').trim().slice(0, 200) || null, body: b });
+  };
+
+  // [표] … [본문] 구분을 그대로 씁니다 (extractText 가 붙여 둔 것입니다).
+  const tablePart = (text.match(/\[표\]\n([\s\S]*?)(?=\n\[본문\]|$)/) || [])[1] || '';
+  const bodyPart = (text.match(/\[본문\]\n([\s\S]*)$/) || [])[1]
+                || (tablePart ? '' : text);
+
+  for (const block of tablePart.split(/\n\s*\n/)) {
+    const rows = block.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (!rows.length) continue;
+    // 첫 줄에 값이 없으면 머리글로 봅니다 (제목 | 강사 | 수강료 …).
+    const header = rows.length > 1 && !/\d/.test(rows[0]) ? rows[0] : null;
+    const data = header ? rows.slice(1) : rows;
+    for (let i = 0; i < data.length; i += tableRows) {
+      const slice = data.slice(i, i + tableRows);
+      push(header, (header ? header + '\n' : '') + slice.join('\n'));
+    }
+  }
+
+  // 본문은 제목처럼 보이는 줄에서 끊습니다 — 짧고, 문장부호로 끝나지 않는 줄.
+  const looksLikeHeading = (l) =>
+    l.length <= 40 && !/[.。!?]$/.test(l) && !/\|/.test(l) && /\S/.test(l);
+
+  let heading = null;
+  let buf = [];
+  let size = 0;
+  const flush = () => { if (buf.length) push(heading, buf.join('\n')); buf = []; size = 0; };
+
+  for (const line of bodyPart.split('\n')) {
+    const l = line.trim();
+    if (!l) continue;
+    if (size && size + l.length > maxChars) flush();
+    if (!buf.length && looksLikeHeading(l)) { heading = l; }
+    buf.push(l);
+    size += l.length + 1;
+  }
+  flush();
+
+  return out.map((c, i) => ({ ...c, ord: i }));
 }
 
 // ---------------------------------------------------------------- 한 건 갱신
@@ -336,28 +838,249 @@ async function refreshOne(service, { force = false, deps = {} } = {}) {
   }
 
   const text = extractText(page.html);
-  const h = hash(text);
+
+  // 대문을 읽었으니, 거기서 한 걸음 더 — 강좌·시간표·신청 안내가 있을 만한 곳.
+  // 실패는 한 장씩만 잃습니다. 하위 페이지 하나가 안 열린다고 그 서비스 전체가
+  // 자료 없이 남으면, 고치기 전보다 나빠집니다.
+  const pages = [{ url, title: null, kind: 'landing', parent: null, text, http: page.httpStatus }];
+  const notes = [];
+
+  // 네 장을 나란히 받아옵니다.
+  //
+  // 차례로 받으면 한 서비스가 그 기관의 느린 응답을 네 번 <이어서> 기다립니다.
+  // 자바스크립트로 그리는 페이지는 한 장에 100초씩 걸리기도 해서, 서초50플러스
+  // 센터 한 곳이 8분 23초였습니다. 같은 기관에 네 개의 요청을 동시에 보내는 것은
+  // 브라우저가 그 페이지를 열 때 늘 하는 일이고, 네 개는 그보다 적습니다.
+  //
+  // In series, one service waits out the same slow host four times over — 8m23s
+  // for a site whose pages each take ~100s to render. Four concurrent requests
+  // to one host is fewer than a browser opens loading that same page.
+  const subs = await Promise.all(pickSubpages(page.html, url).map(async (sub) => {
+    try {
+      // 따라간 페이지는 한 번만 — 없어도 대문이 답합니다.
+      const p = await get(sub.url, { tries: 1 });
+      if (p.error) return { note: sub.url + ': ' + p.error };
+      return { page: { url: sub.url, title: sub.title, kind: 'subpage', parent: url,
+                       text: extractText(p.html), http: p.httpStatus } };
+    } catch (e) { return { note: sub.url + ': ' + String(e.message || e).slice(0, 80) }; }
+  }));
+  for (const r of subs) {
+    if (r.note) notes.push(r.note);
+    else pages.push(r.page);
+  }
+
+  // 같은 메뉴를 다섯 번 세지 않습니다.
+  //
+  // extractText 는 <한 페이지 안에서> 되풀이되는 줄을 지웁니다. 그런데 한 기관의
+  // 다섯 장은 머리글·메뉴·바닥글이 통째로 같습니다. 그것을 그대로 두면 방배
+  // 느티나무쉼터가 3,211자를 가진 것처럼 보입니다 — 실제로 내용은 거의 없고
+  // 메뉴만 네 번 더 있는 것인데도요. 그리고 그 부풀려진 숫자 때문에 "글이
+  // 넉넉하다"고 판단해서, 정작 유일한 자료인 시간표 그림을 건너뛰었습니다.
+  //
+  // extractText drops lines repeated within one page, but five pages of one site
+  // share their whole menu. Left in, Bangbae looked like it held 3,211 characters
+  // when it held almost nothing and four more copies of its navigation — and that
+  // inflated figure is what made the run skip the timetable poster, which was the
+  // only thing on the site that answered anything.
+  const seenLine = new Set();
+  for (const p of pages) {
+    p.text = p.text.split('\n')
+      .filter((l) => {
+        const k = l.trim();
+        if (k.length < 4) return true;          // 짧은 줄은 표 칸일 수 있습니다
+        if (seenLine.has(k)) return false;
+        seenLine.add(k);
+        return true;
+      })
+      .join('\n').trim();
+  }
+
+  // 겹치는 것을 걷어내고 나서 보니 남은 것이 없는 장은, 메뉴만 있던 장입니다.
+  for (let i = pages.length - 1; i >= 1; i--) {
+    if (pages[i].text.length < 200) {
+      notes.push(pages[i].url + ': nav only (' + pages[i].text.length + ')');
+      pages.splice(i, 1);
+    }
+  }
+
+  const imgs = pickImages(page.html, url);
+
+  // 바뀌지 않았으면 여기서 멈춥니다 — <대문만이 아니라 따라간 장까지 함께> 보고
+  // 판단합니다.
+  //
+  // 예전에는 대문 한 장의 해시만 봤습니다. 그러면 강좌표에 새 강좌가 열두 개
+  // 올라와도 대문이 그대로면 '변경 없음' 으로 지나갑니다 — 이번 라운드에서 새로
+  // 얻은 바로 그 페이지가, 첫날 이후로는 영영 다시 읽히지 않는 셈입니다.
+  // 페이지를 받아오는 것은 값이 싸고, 비싼 것은 모델 호출입니다. 그러니 받아올
+  // 것은 다 받아오고, 바뀐 것이 없을 때 모델을 부르지 않으면 됩니다.
+  //
+  // Hashing only the front door meant twelve new courses on the course page went
+  // unnoticed whenever the homepage happened not to change — the very page this
+  // round added would have been read once and then never again. Fetching is
+  // cheap and the model call is not, so fetch everything and skip the model.
+  const h = hash(pages.map((p) => p.url + '\n' + p.text).join('\n')
+    + '\n' + imgs.map((i) => i.url).join('\n'));
+
   if (!force && before && before.content_hash === h && before.status === 'ok') {
-    await db.query('UPDATE service_sources SET fetched_at = now(), updated_at = now() WHERE id = $1',
-      [before.id]);
+    await db.query(
+      'UPDATE service_sources SET fetched_at = now(), updated_at = now() WHERE service_id = $1',
+      [service.id]);
     return { code: service.code, status: 'unchanged', chars: text.length };
   }
 
+  // 그림은 <읽을 것이 없을 때만> 봅니다.
+  //
+  // 모델 호출이 한 장에 한 번씩 들고, 대부분의 그림은 장식입니다. 글이 이미
+  // 넉넉한 페이지에서까지 포스터를 옮겨 적으면 하루치 비용이 쓸데없이 몇 배가
+  // 됩니다. 반대로 글이 없는 곳에서는 그림이 유일한 자료입니다 — 방배느티나무
+  // 쉼터의 시간표가 정확히 그런 경우입니다.
+  //
+  // Vision costs a model call per image and most images are decoration, so it is
+  // taken only where the text came up short — which is exactly where the picture
+  // is the only thing there is.
+  const vis = deps.describeImage || describeImage;
+  const bin = deps.fetchBinary || fetchBinary;
+  const thinText = pages.reduce((n, p) => n + p.text.length, 0) < VISION_TEXT_FLOOR;
+
+  if (thinText && env.ANTHROPIC_API_KEY) {
+    // 전에 읽어 둔 그림은 다시 읽지 않습니다.
+    //
+    // 이 CMS 들은 올린 시각으로 파일 이름을 짓습니다 — 포스터가 바뀌면 주소도
+    // 바뀝니다. 그러니 같은 주소면 같은 그림이고, 매일 밤 같은 시간표를 다시
+    // 눈으로 읽는 것은 값만 치르는 일입니다. --force 는 이 아낌을 건너뜁니다.
+    //
+    // These systems name files by upload time, so a new poster is a new URL: the
+    // same URL is the same picture, and re-reading it nightly buys nothing.
+    const known = new Map((await db.all(
+      `SELECT url, text, http_status FROM service_sources
+        WHERE service_id = $1 AND kind = 'image' AND text IS NOT NULL`, [service.id]))
+      .map((r) => [r.url, r]));
+
+    for (const img of imgs) {
+      const seen = !force && known.get(img.url);
+      if (seen) {
+        pages.push({ url: img.url, title: img.title || null, kind: 'image', parent: url,
+                     text: seen.text, http: seen.http_status });
+        continue;
+      }
+      try {
+        const got = await bin(img.url);
+        if (got.error || !got.buf) { notes.push(img.url + ': ' + (got.error || 'no bytes')); continue; }
+        if (got.buf.length < MIN_IMAGE_BYTES) { notes.push(img.url + ': decoration'); continue; }
+        if (got.buf.length > MAX_IMAGE_BYTES) { notes.push(img.url + ': too large'); continue; }
+        const said = await vis(service, img, got.buf, got.type);
+        if (!said) { notes.push(img.url + ': nothing in it'); continue; }
+        pages.push({ url: img.url, title: img.title || null, kind: 'image', parent: url,
+                     text: said, http: got.httpStatus });
+      } catch (e) { notes.push(img.url + ': ' + String(e.message || e).slice(0, 80)); }
+    }
+  }
+
+  // 한 서비스의 자료를 한 덩어리로 묶어 한 번만 요약합니다 — 페이지마다 요약하면
+  // 같은 전화번호를 네 번 적어 놓고 정작 강좌표는 자리가 없습니다.
+  const merged = pages.map((p) =>
+    `---- ${p.kind === 'image' ? '그림' : '페이지'}: ${p.title || p.url} (${p.url}) ----\n${p.text}`
+  ).join('\n\n');
+
   let facts;
-  try { facts = await sum(service, text); }
+  try { facts = await sum(service, merged); }
   catch (e) {
     await save(service, url, { status: 'error', http: page.httpStatus,
                                error: 'summary: ' + String(e.message || e).slice(0, 160),
-                               hash: h, raw: text.length,
+                               hash: h, raw: text.length, kind: 'landing', text,
                                facts: before && before.facts, facts_en: before && before.facts_en });
     return { code: service.code, status: 'error', reason: 'summary failed' };
   }
 
+  // 읽어 온 글에 근거가 없는 줄은 여기서 걷어냅니다 (③-b). 모델이 빈 곳을
+  // 채우려 드는 것은 프롬프트로 완전히 막히지 않으므로, 기계로 한 번 더 봅니다.
+  // 카탈로그 행도 근거입니다 — 기관 이름과 설명은 클라이언트가 직접 준 자료이고,
+  // 요약 프롬프트에도 함께 들어갑니다. 여기서 빼면 '기관 이름을 지어냈다'고
+  // 잘못 판정합니다.
+  const checked = dropUngrounded(facts,
+    [service.sub, service.description, service.org, merged].filter(Boolean).join('\n'));
+  if (checked.dropped) notes.push(checked.dropped + ' ungrounded line(s) dropped');
+  facts = checked;
+
   const empty = !facts.ko;
-  await save(service, url, { status: empty ? 'empty' : 'ok', http: page.httpStatus, error: null,
-                             hash: h, raw: text.length, facts: facts.ko, facts_en: facts.en });
+  // 요약은 대문 줄에만 답니다. 키오스크는 facts 가 있는 줄 하나를 읽으므로
+  // (kiosk-context.js), 이 줄이 그 서비스를 대표합니다. 나머지 장은 글만 남겨
+  // 두었다가 질문이 들어온 뒤에 꺼내 씁니다.
+  await save(service, url, { status: empty ? 'empty' : 'ok', http: page.httpStatus,
+                             error: notes.length ? notes.join(' · ').slice(0, 400) : null,
+                             hash: h, raw: text.length, kind: 'landing', text,
+                             facts: facts.ko, facts_en: facts.en });
+
+  for (const p of pages.slice(1)) {
+    await save(service, p.url, { status: 'ok', http: p.http, error: null,
+                                 hash: hash(p.text), raw: p.text.length,
+                                 kind: p.kind, title: p.title, parent: p.parent, text: p.text });
+  }
+
+  // 사이트에서 사라진 장은 우리 쪽에서도 지웁니다.
+  //
+  // 이 CMS 들은 올린 시각으로 파일 이름을 짓기 때문에, 포스터가 새것으로 바뀌면
+  // <새 주소>가 생깁니다. 옛 줄을 그대로 두면 지난 분기 시간표와 이번 분기
+  // 시간표가 나란히 남아, 어느 쪽이 어르신께 나갈지 알 수 없게 됩니다. 지나간
+  // 시간표를 사실인 양 읽어 드리는 것이야말로 이 층이 막으려던 일입니다.
+  //
+  // 오늘 <못 읽은> 장은 지우지 않습니다 — 여전히 링크되어 있고 잠깐 안 열렸을
+  // 뿐입니다. 지우는 것은 '링크에서 사라진' 장뿐입니다.
+  //
+  // A replaced poster gets a new URL, so leaving the old row behind keeps last
+  // quarter's timetable alive beside this quarter's, with no way to say which a
+  // senior will be read. A page that merely failed today is still linked and is
+  // kept; only pages the site no longer points at are removed.
+  const current = [url, ...pickSubpages(page.html, url).map((s) => s.url), ...imgs.map((i) => i.url)];
+  const gone = await db.query(
+    'DELETE FROM service_sources WHERE service_id = $1 AND url <> ALL($2::text[])',
+    [service.id, current]);
+  if (gone.rowCount) notes.push(gone.rowCount + ' page(s) no longer linked, removed');
+
+  // 조각은 이 서비스가 지금 가진 <모든> 장에서 다시 만듭니다 — 이번에 못 읽은
+  // 하위 페이지의 지난번 글도 그대로 들어갑니다. 대문은 열렸는데 하위 한 장이
+  // 흔들렸다고 어제까지 답하던 강좌표가 사라지면, 고치기 전보다 나빠집니다.
+  const chunks = await rechunk(service);
+
   return { code: service.code, status: empty ? 'empty' : 'ok',
-           chars: text.length, factChars: (facts.ko || '').length };
+           chars: merged.length, factChars: (facts.ko || '').length,
+           pages: pages.length, subpages: pages.filter((p) => p.kind === 'subpage').length,
+           images: pages.filter((p) => p.kind === 'image').length,
+           chunks, notes };
+}
+
+/**
+ * 이 서비스의 조각을 다시 만듭니다.
+ *
+ * 통째로 지우고 다시 넣습니다. 조각은 파생물이라 원본이 바뀌면 의미가 없고,
+ * 맞춰 고치는 것보다 다시 만드는 편이 틀릴 구석이 없습니다. 한 번의 트랜잭션
+ * 안에서 하므로, 그 사이에 질문이 들어와도 빈 상태를 보지 않습니다.
+ *
+ * Chunks are derived data: rebuilt, not reconciled. Doing it in one transaction
+ * means a conversation landing mid-sync never sees an empty shelf.
+ */
+async function rechunk(service) {
+  const rows = await db.all(
+    `SELECT id, url, title, kind, text FROM service_sources
+      WHERE service_id = $1 AND text IS NOT NULL AND text <> ''
+      ORDER BY CASE kind WHEN 'landing' THEN 0 WHEN 'subpage' THEN 1 ELSE 2 END, url`,
+    [service.id]);
+
+  let n = 0;
+  await db.tx(async (client) => {
+    await client.query('DELETE FROM source_chunks WHERE service_id = $1', [service.id]);
+    for (const row of rows) {
+      for (const c of chunkText(row.text)) {
+        await client.query(
+          `INSERT INTO source_chunks
+             (service_id, source_id, url, title, kind, ord, heading, body, chars)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [service.id, row.id, row.url, row.title, row.kind, n, c.heading, c.body, c.body.length]);
+        n++;
+      }
+    }
+  });
+  return n;
 }
 
 async function save(service, url, f) {
@@ -383,19 +1106,27 @@ async function save(service, url, f) {
   const keepUsable = f.status === 'error' && f.facts;
   const status = keepUsable ? 'ok' : f.status;
 
+  // 읽지 못했을 때는 지난번 글도 그대로 둡니다 (facts 와 같은 이유입니다) —
+  // COALESCE 로, 넘겨받은 것이 없으면 이미 있던 것을 지키게 합니다.
   await db.query(
     `INSERT INTO service_sources
        (service_id, url, fetched_at, status, http_status, error, content_hash, raw_chars,
-        facts, facts_en, fact_chars)
-     VALUES ($1, $2, now(), $3, $4, $5, $6, $7, $8, $9, $10)
+        facts, facts_en, fact_chars, kind, title, parent_url, text)
+     VALUES ($1, $2, now(), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      ON CONFLICT (service_id, url) DO UPDATE SET
        fetched_at = ${keepUsable ? 'service_sources.fetched_at' : 'now()'},
        status = excluded.status, http_status = excluded.http_status,
        error = excluded.error, content_hash = excluded.content_hash,
        raw_chars = excluded.raw_chars, facts = excluded.facts,
-       facts_en = excluded.facts_en, fact_chars = excluded.fact_chars, updated_at = now()`,
+       facts_en = excluded.facts_en, fact_chars = excluded.fact_chars,
+       kind = excluded.kind,
+       title = COALESCE(excluded.title, service_sources.title),
+       parent_url = COALESCE(excluded.parent_url, service_sources.parent_url),
+       text = COALESCE(excluded.text, service_sources.text),
+       updated_at = now()`,
     [service.id, url, status, f.http || null, f.error || null, f.hash || null,
-     f.raw || 0, f.facts || null, f.facts_en || null, (f.facts || '').length]);
+     f.raw || 0, f.facts || null, f.facts_en || null, (f.facts || '').length,
+     f.kind || 'landing', f.title || null, f.parent || null, f.text || null]);
 }
 
 /** 링크가 있는 서비스 전부 — one at a time, so a slow government host cannot
@@ -415,4 +1146,9 @@ async function refreshAll({ force = false, only = null, onProgress = () => {} } 
   return out;
 }
 
-module.exports = { fetchPage, extractText, tableToText, summarise, refreshOne, refreshAll, worthReadingAnyway };
+module.exports = {
+  fetchPage, fetchBinary, extractText, tableToText, summarise, worthReadingAnyway,
+  pickSubpages, pickImages, describeImage, chunkText, tidyUrl, rechunk,
+  dropUngrounded, lineIsGrounded,
+  refreshOne, refreshAll,
+};

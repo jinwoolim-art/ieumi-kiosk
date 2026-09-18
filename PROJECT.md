@@ -359,6 +359,10 @@ ieumi-kiosk/
 ├── assets/prototype/                # character / phone / background images
 └── ieumi-server/
     ├── server.js                    # zero-dependency Node backend
+    ├── sources.js                   # reads the linked pages, sub-pages and posters (§10a)
+    ├── retrieval.js                 # picks the parts of those pages a question needs (§10a)
+    ├── korea-relay.js               # fetches from inside Korea, for geo-blocked hosts
+    ├── render.js                    # drives Chrome for JavaScript-built pages
     └── .env.example                 # copy to .env and fill in the keys
 ```
 
@@ -500,6 +504,76 @@ preview calls renames out on their own and says **how many requests are attached
 `s19` had none, so the client's version was applied and **긴급복지지원 was moved to `s61`** rather than
 being deleted — the client owns this catalogue's numbering, and nothing of ours had to be lost to
 honour it.
+
+---
+
+## 10a. Reading what is behind the link — pages, posters, retrieval
+
+A catalogue row says what a service *is*. This layer is what the linked page *says*. It runs on a
+schedule (`npm run sync-sources`), never inside a conversation (§3-6).
+
+**The stage this was added to fix (2026-09-18).** The client asked Ieumi to name three courses from
+the 서초50플러스센터 row and it could not. The pipeline was not broken: the catalogue URL was
+`…/sch/index.do`, the **front door**, which the code read correctly — hours, phone, address, 2,208
+characters. The courses sat one click away at `…/sch/education.do`, which the code *already parsed
+cleanly* at 3,241 characters. Nobody had followed the link. **25 of 70 catalogue links point at a
+bare homepage the same way**, the median summary was 212 characters, and 24 of them ended in "this
+page doesn't say — call them".
+
+```
+services.link ──► landing page ──► up to 4 sub-pages     (강좌·시간표·신청·이용안내, same host)
+                       │
+                       └────────► up to 4 posters        (only when the text came up thin)
+                                        │
+        all of it ──► one summary  (service_sources.facts — always in the prompt)
+                 └──► kept as text ──► source_chunks     (retrieved per question)
+```
+
+**Four properties worth keeping.**
+
+- **One hop, same host.** Two hops is crawling a site, which is a different proposition from reading
+  a few public pages once a day. The relay's allow-list is per hostname, so leaving the host would
+  be refused anyway — and should be.
+- **Posters are transcribed, not summarised.** 방배느티나무쉼터's timetable page is 486 characters
+  and every one is navigation; the October schedule exists only as a JPG. A summarised timetable
+  stops being a timetable, because the question is always about one cell of it.
+- **The summary is kept *and* the text is kept.** Summarising chooses what matters before the
+  question exists, so thirty courses become ten lines and twenty vanish. The summary still travels
+  in every prompt; the pieces that match the question are added on top (`retrieval.js`).
+- **Retrieval is substring overlap, not embeddings.** Korean glues its particles on (강좌/강좌를/
+  강좌는 all contain 강좌), it needs no model call, and when an answer goes wrong it can be traced by
+  eye — which matters when the person who got the wrong answer is 84. A small expansion table
+  bridges the gap between how a senior asks ("몇 시에 문 여나요") and how a page writes it
+  ("운영시간"), the same rule the prompt already gives the model.
+
+### The invention guard — read this before touching the summariser
+
+On the first real run of this layer, the summary for 방배느티나무쉼터 came back holding a **complete
+weekly timetable that very nearly matched the real poster** — and the word 시니어발레 appeared
+**nowhere** in the 3,211 characters actually fetched. The model invented it, and was right.
+
+Being right is the worse outcome. A fabrication that is usually correct earns trust and then fails
+with no warning. Compared against the poster once it was genuinely read, Thursday's class was
+"캘리그라피" (invented) against **"칼림바교실"** (real). That is the size of the error, and the person
+who discovers it is standing outside a locked door.
+
+So every summary line is now checked against the text that was actually fetched, by
+`dropUngrounded()` in `sources.js`, with no extra model call:
+
+- **every number must be present** — a fee, a time or a phone number is what a senior acts on, so
+  one that is not in the source drops the line outright;
+- **distinctive words must be present** — three characters or more, because 이용/운영/안내 appear on
+  every institutional page in Korea and separate nothing. What separates a transcribed line from an
+  invented one is the names: 셔플댄스 is either written on the page or it is not.
+
+Two calibrations were needed and both are load-bearing. Numbers are compared as **digit groups**,
+because a summary rewrites them (`2026.09.18 ~2026.10.07` → `09.18~10.07`) and literal matching cut
+all ten real course lines. Words are matched with **at most one trailing character removed**,
+because stripping three let two-character stems match anywhere in a 2,700-character document and the
+fabricated timetable scored 40 of 44 words "grounded" and sailed through.
+
+A high `✂` count in the sync output is **not** a success. It means the extraction prompt is pushing
+the model to fill gaps, and the prompt is what should change.
 
 ---
 

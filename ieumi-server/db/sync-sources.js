@@ -37,15 +37,34 @@ const env = require('../env.js');
     only: only.length ? only : null,
     onProgress: (r, i, n) => {
       const mark = { ok: '✔', unchanged: '·', empty: '○', error: '✖', skipped: '–' }[r.status] || '?';
+      // 몇 장을 따라갔고 그림을 몇 장 읽었는지 함께 보여 줍니다. "읽었다" 와
+      // "강좌표까지 읽었다" 는 다르고, 그 차이가 이번 작업의 전부입니다.
+      const depth = [
+        r.subpages ? '+' + r.subpages + 'p' : '',
+        r.images ? '+' + r.images + 'img' : '',
+        r.chunks ? r.chunks + ' chunks' : '',
+      ].filter(Boolean).join(' ');
       console.log('  ' + mark + ' ' + String(i).padStart(3) + '/' + n + '  ' + r.code.padEnd(5)
-        + r.status.padEnd(11) + (r.reason || (r.factChars ? r.factChars + ' chars of facts' : '')));
+        + r.status.padEnd(11)
+        + (r.reason || (r.factChars ? String(r.factChars).padStart(5) + ' chars  ' : '')).padEnd(16)
+        + depth);
     },
   });
 
   const by = {};
   out.forEach((r) => { by[r.status] = (by[r.status] || 0) + 1; });
+  const sum = (k) => out.reduce((n, r) => n + (r[k] || 0), 0);
   console.log('\n  ' + Object.entries(by).map(([k, v]) => k + ' ' + v).join(' · ')
     + '   (' + Math.round((Date.now() - t0) / 1000) + 's)');
+  console.log('  따라간 페이지 ' + sum('subpages') + ' · 읽은 그림 ' + sum('images')
+    + ' · 조각 ' + sum('chunks'));
+
+  // 근거 없는 줄이 얼마나 잘렸는지 — 많으면 요약 프롬프트가 잘못된 것입니다.
+  // How many lines failed the grounding check. A large number here is not a
+  // success, it is a sign the extraction prompt is pushing the model to invent.
+  const cut = out.reduce((n, r) => n
+    + Number(((r.notes || []).join(' ').match(/(\d+) ungrounded/) || [])[1] || 0), 0);
+  if (cut) console.log('  ✂ 근거 없어 버린 줄 ' + cut + '개 (ungrounded lines dropped)');
 
   const bad = out.filter((r) => r.status === 'error');
   if (bad.length) {

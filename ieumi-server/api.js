@@ -426,12 +426,23 @@ async function listServices(req, res, user, url) {
             src.fact_chars  AS source_chars,
             src.facts       AS source_facts,
             src.facts_en    AS source_facts_en,
-            to_char(src.fetched_at, 'YYYY-MM-DD HH24:MI') AS source_at
+            to_char(src.fetched_at, 'YYYY-MM-DD HH24:MI') AS source_at,
+            -- 몇 장을 읽었고 몇 조각으로 갈라 두었는지 (010).
+            -- "읽었다" 와 "강좌표까지 읽었다" 는 다릅니다. 담당자가 그 차이를
+            -- 화면에서 볼 수 없으면, 이번에도 어르신이 물어야만 드러납니다.
+            -- Read is not the same as read deeply enough to name a course, and
+            -- without this the difference surfaces only when a senior asks.
+            (SELECT count(*) FROM service_sources p
+              WHERE p.service_id = s.id AND p.kind <> 'landing')  AS source_pages,
+            (SELECT count(*) FROM source_chunks k
+              WHERE k.service_id = s.id)                          AS source_chunks
        FROM services s
        LEFT JOIN center_services cs ON cs.service_id = s.id AND cs.center_id = $1
        LEFT JOIN LATERAL (
+         -- 대문 줄에만 요약이 달려 있습니다 (010). 하위 페이지·그림 줄은 글만
+         -- 들고 있어서, 여기서 그쪽이 잡히면 읽은 서비스가 안 읽은 것으로 보입니다.
          SELECT status, error, fact_chars, facts, facts_en, fetched_at
-           FROM service_sources WHERE service_id = s.id
+           FROM service_sources WHERE service_id = s.id AND kind = 'landing'
           ORDER BY fetched_at DESC NULLS LAST LIMIT 1
        ) src ON true
       WHERE s.active = true AND (s.scope = 'common' OR s.center_id = $1)

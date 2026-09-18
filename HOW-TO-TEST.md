@@ -215,12 +215,69 @@ this.
 cd ieumi-server && npm test
 ```
 
-Expected **`111 passed, 0 failed`**. They run against an in-memory Postgres
+Expected **`137 passed, 0 failed`**. They run against an in-memory Postgres
 (PGlite) and never touch the real database, so they are safe to run any time.
 
 ---
 
-## 12. Re-reading the linked pages
+## 12. Test F — courses, timetables, and the invention guard
+
+This is the round the client escalated on 2026-09-18: *"ask it to name three
+courses from the link and it cannot."* Ask these at the kiosk, in Korean.
+
+| Ask | What you should get | What failure looks like |
+|---|---|---|
+| `서초50플러스센터 강좌 프로그램 3개만 소개해 주세요` | Three **named** courses, starting in October | "There are various programmes" |
+| `셔플댄스 수강료가 얼마예요?` | **30,000원, 정원 15명** | a different number, or a deferral to staff |
+| `방배느티나무쉼터 10월 월요일에 무슨 프로그램 있어요?` | Monday's classes by name — **this comes out of a JPG poster** | "I can't know the timetable" |
+| `목요일 오후에 배울 수 있는 거 뭐 있나` | Thursday afternoon classes, with the room | a request to rephrase |
+| `방배느티나무쉼터 토요일에 뭐 해요?` | **Says there is nothing on Saturday**, and gives the phone number | *inventing a Saturday class* |
+
+The last row is the one to watch. On the first run of this layer the model
+produced a complete, plausible, **entirely invented** weekly timetable that
+happened to be nearly correct — so every summary line is now checked against the
+text actually fetched before it is stored. To see that check by itself:
+
+```bash
+cd ieumi-server && npm test 2>&1 | grep -i invented
+```
+
+### Seeing how deep each service was read
+
+The admin dashboard's service list now shows, per service, how many extra pages
+were followed and how many retrievable pieces exist (`source_pages`,
+`source_chunks`). A service showing `0` extra pages is one whose link is
+probably a front door — the same defect this round was about.
+
+---
+
+## 13. Is the public-data key approved yet?
+
+```bash
+cd ieumi-server && npm run check-datago
+```
+
+One data.go.kr account has **one key**, and every API needs its own 활용신청 approval
+on the portal. So a blocked service looks identical whether the key is wrong or the
+key is simply not subscribed — which is why "the key wasn't applied" keeps coming back.
+This settles it in thirty seconds, with the portal's own wording, and costs nothing (no
+model call, no database).
+
+As of 2026-09-18: **3 open** (senior jobs, Bokjiro central, Bokjiro local) and **8 not
+subscribed** (pharmacy, emergency centres, ER beds, forecast, weather alerts, two TAGO
+bus services, HIRA hospitals). The tool says which conclusion follows:
+
+```
+  → The key is fine: the services above answered with it. The blocked ones
+    are not subscribed on the portal, and a new key will not change that.
+```
+
+`npm run check-datago -- 약국` filters to one; `-- --json` gives machine output.
+Re-run it after the client approves anything — that is the whole point of it.
+
+---
+
+## 14. Re-reading the linked pages
 
 ```bash
 cd ieumi-server && npm run sync-sources
@@ -231,8 +288,24 @@ cd ieumi-server && npm run sync-sources -- --force
 First form does every link, second only the named services, third re-summarises
 even when the page has not changed. Pages whose content is unchanged skip the
 model call, so after the first run this costs little more than the fetches.
-Worth scheduling daily. Around 8–10 minutes for the full catalogue, mostly
-waiting on slow government hosts.
+Worth scheduling daily.
+
+Each line now also reports how deep it went:
+
+```
+  ✔   2/3  s40  ok          1339 chars   +4p 11 chunks
+  ✔   1/3  s18  ok           761 chars   +3img 19 chunks
+```
+
+`+4p` is four sub-pages followed, `+3img` three posters transcribed, and
+`chunks` is how many retrievable pieces the service now has. A `✂` line in the
+summary counts lines dropped for having no basis in the fetched text — a large
+number there is not a success, it means the extraction prompt is pushing the
+model to invent and should be looked at.
+
+The full catalogue takes longer than before, because services whose pages are
+thin now also read their posters. Budget **25–40 minutes**, mostly waiting on
+slow government hosts.
 
 ---
 

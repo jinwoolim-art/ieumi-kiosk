@@ -366,9 +366,14 @@ function jobsSection({ jobs = [], scope = 'none', region = '', centerRegion = ''
  * The concatenation is the same either way, so `cache: false` is a true
  * fallback rather than a different prompt.
  */
-function systemBlocks(persona, jobsInfo, { cache = true } = {}) {
+function systemBlocks(persona, jobsInfo, { cache = true, detail = '' } = {}) {
   const fixed = buildSystem(persona);      // 복지관마다 고정 — stable per centre
-  const perTurn = jobsSection(jobsInfo);   // 질문마다 달라짐 — new every turn
+  // 질문마다 달라짐 — new every turn. 뽑아 온 조각(retrieval.js)도 여기 들어갑니다:
+  // 질문에 따라 매번 달라지므로 캐시되는 앞부분에 넣으면 그 캐시를 매 턴 깨뜨립니다.
+  // Retrieved detail belongs here for the same reason the postings do: it changes
+  // with every question, and putting it in the cached prefix would break the
+  // cache on every turn.
+  const perTurn = jobsSection(jobsInfo) + (detail || '');
   return cache
     ? [{ type: 'text', text: fixed, cache_control: { type: 'ephemeral' } },
        { type: 'text', text: perTurn }]

@@ -31,6 +31,12 @@ const SQL = `
     LEFT JOIN LATERAL (
       SELECT json_agg(
                json_build_object(
+                 -- 조각을 꺼내 올 때 쓰는 열쇠입니다 (retrieval.js). 이 목록이
+                 -- 곧 <이 복지관이 켜 둔 서비스>이므로, 여기서 나온 id 로만
+                 -- 찾으면 다른 복지관의 자료에는 닿을 수 없습니다 (§3-1).
+                 -- This list *is* the centre's switched-on services, so keying
+                 -- retrieval off these ids is the tenant boundary itself.
+                 'id', sv.id,
                  'code', sv.code,
                  'category', sv.category,
                  'sub', COALESCE(cs.override_sub, sv.sub),
@@ -55,6 +61,7 @@ const SQL = `
         LEFT JOIN LATERAL (
           SELECT facts, facts_en, fetched_at FROM service_sources
            WHERE service_id = sv.id AND status = 'ok' AND facts IS NOT NULL
+             AND kind = 'landing'
            ORDER BY fetched_at DESC LIMIT 1
         ) src ON true
        WHERE cs.center_id = c.id AND cs.enabled = true AND sv.active = true

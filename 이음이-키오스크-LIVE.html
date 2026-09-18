@@ -784,10 +784,13 @@ async function onUser(text){
       let m;
       if(other){
         const keep=pickedJob; pickedJob=other;
-        const content=await requestSms('send').catch(()=>'');
+        const { content, sent } = await requestSms('send').catch(()=>({content:'',sent:false}));
         pickedJob=keep;
-        smsSent=true; showSentCard('✅ 다른 일자리도 보냈어요', content); setStatus('');
-        m=(nm?nm+' 어르신, ':'')+'어르신께 맞을 만한 다른 일자리도 문자로 보내드렸어요. 도움이 되시길 바라요. 안녕히 가세요!';
+        smsSent=true;
+        showSentCard(sent?'✅ 다른 일자리도 보냈어요':'📄 다른 일자리도 보여드려요', content); setStatus('');
+        m=sent
+          ? (nm?nm+' 어르신, ':'')+'어르신께 맞을 만한 다른 일자리도 문자로 보내드렸어요. 도움이 되시길 바라요. 안녕히 가세요!'
+          : (nm?nm+' 어르신, ':'')+'어르신께 맞을 만한 다른 일자리도 화면에 띄워드렸어요. 도움이 되시길 바라요. 안녕히 가세요!';
       }else{
         m=(nm?nm+' 어르신, ':'')+'지금은 알려드릴 다른 자리가 없어요. 담당 선생님께 전해드릴게요. 안녕히 가세요!';
       }
@@ -864,15 +867,26 @@ async function requestSms(kind){
       summary: lastSummary || undefined,
     })});
   const d = await r.json().catch(()=>({}));
-  return d.content || '';
+  // sent 를 함께 돌려줍니다 — 보냈는지 아닌지를 부르는 쪽이 알아야 합니다.
+  // 예전에는 content 만 돌려주어서, 문자 키가 없어도 "문자를 보내드렸어요" 라고
+  // 말했습니다. 어르신은 오지 않는 문자를 기다리시게 됩니다.
+  // Returning only the body made every attempt look successful: with no SMS key
+  // Ieumi still said it had sent one, and a senior waits for a text that will
+  // never arrive.
+  return { content: d.content || '', sent: !!d.sent };
 }
 
 async function doSend(){
   const nm=memberName();
   // 실발송 시도: .env에 SMS 키가 있으면 실제 문자 발송, 없으면 화면 표시만 (시연)
-  const content = await requestSms('send').catch(()=>'');
-  smsSent=true; showSentCard('✅ 문자를 보냈어요', content); setStatus('');
-  const done=(nm?nm+' 어르신, ':'')+'말씀하신 번호로 문자를 보내드렸어요.';
+  const { content, sent } = await requestSms('send').catch(()=>({content:'',sent:false}));
+  smsSent=true;
+  showSentCard(sent?'✅ 문자를 보냈어요':'📄 문자 내용을 보여드려요', content); setStatus('');
+  // 실제로 보내지 못했으면 보냈다고 말하지 않습니다. 화면에는 그대로 보여드립니다 —
+  // 내용을 읽으실 수는 있어야 하니까요.
+  const done=sent
+    ? (nm?nm+' 어르신, ':'')+'말씀하신 번호로 문자를 보내드렸어요.'
+    : (nm?nm+' 어르신, ':'')+'지금은 문자를 보내드릴 수 없어서, 화면에 내용을 띄워드렸어요. 담당 선생님께도 전해드릴게요.';
   history.push({role:'assistant',content:done}); offerSms=false;
   await speak(done);
   if(!active) return;

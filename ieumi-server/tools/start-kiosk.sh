@@ -41,6 +41,24 @@ MSG
   exit 1
 fi
 
+# ---- are the dependencies installed? ----------------------------------------
+# The relay needs nothing but Node, so a machine that runs start-relay.sh
+# perfectly well can still have no node_modules. The failure then arrives as a
+# stack trace ending in "Cannot find module pg", which never says the one thing
+# you need to do about it.
+if [ ! -d node_modules/pg ]; then
+  cat <<'MSG'
+
+  [!] Dependencies are not installed in this folder.
+      The relay needs only Node, so this is easy to miss.
+
+  Run this once, here, then start this script again:
+      npm install --omit=dev
+
+MSG
+  exit 1
+fi
+
 # ---- check the keys ---------------------------------------------------------
 # Each of these fails in its own quiet way, and all three look the same from
 # the front: Ieumi appears, then says it cannot answer.

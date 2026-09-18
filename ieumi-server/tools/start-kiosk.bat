@@ -37,6 +37,23 @@ if "%NODE%"=="" (
   exit /b 1
 )
 
+REM ---- are the dependencies installed? -------------------------------------
+REM  The relay needs nothing but Node, so a machine that runs start-relay.bat
+REM  perfectly well can still have no node_modules. The failure then arrives as
+REM  a stack trace ending in "Cannot find module pg", which never says the one
+REM  thing you need to do about it.
+if not exist "node_modules\pg" (
+  echo.
+  echo   [!] Dependencies are not installed in this folder.
+  echo       The relay needs only Node, so this is easy to miss.
+  echo.
+  echo   Run this once, here, then start this file again:
+  echo       npm install --omit=dev
+  echo.
+  pause
+  exit /b 1
+)
+
 REM ---- check the keys --------------------------------------------------------
 REM  Each of these fails in its own quiet way, and all three look the same from
 REM  the front: Ieumi appears, then says it cannot answer. Better to see it here.

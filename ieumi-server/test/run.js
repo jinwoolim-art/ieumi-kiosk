@@ -1628,6 +1628,7 @@ test('english mode changes the language, not the rules', async () => {
 // linked page plainly states. What was missing was not the model or the rules —
 // nothing had ever opened the page.
 const sourcesMod = require('../sources');
+const retrievalMod = require('../retrieval');
 
 test('sources: a support-amount table survives extraction', async () => {
   // 탐님이 빨간 원으로 표시한 것이 표였습니다. 표를 태그째 지우면 숫자만 남고
@@ -1690,9 +1691,11 @@ test('a failed refresh does not strip a service of the facts it already had', as
   const svc = (await shim.query("SELECT id, code, sub, link FROM services WHERE code = 's3'")).rows[0];
   const url = 'https://example.test/ok';
 
-  // 먼저 성공한 수집 한 번.
+  // 먼저 성공한 수집 한 번. 가짜 페이지에도 요약이 말하는 것이 들어 있어야
+  // 합니다 — 근거 검사(③-b)가 없는 말을 잘라 내기 때문이고, 그것이 옳습니다.
+  const real = '<p>문의 02-1234-5678, 65세 이상 신청 가능. ' + '안내 문구. '.repeat(90) + '</p>';
   await sources.refreshOne({ ...svc, link: url }, { deps: {
-    fetchPage: async () => ({ httpStatus: 200, html: '<p>' + 'x'.repeat(900) + '</p>', error: null }),
+    fetchPage: async () => ({ httpStatus: 200, html: real, error: null }),
     summarise: async () => ({ ko: '문의 02-1234-5678, 65세 이상.', en: 'Call 02-1234-5678, 65+.' }),
   } });
 
@@ -1792,6 +1795,524 @@ test("TENANT BOUNDARY — a centre cannot re-read another centre's source", asyn
   const staff = await call({ method: 'POST', url: '/api/services/' + mine.id + '/source',
     cookie: S.staff.cookie, body: {} });
   assert.strictEqual(staff.statusCode, 403, 'staff cannot trigger a fetch');
+});
+
+// ======================================= 한 걸음 더 · 그림 · 조각 (클라이언트 2026-09-18)
+//
+// 탐님: "정보리스트 42번 링크의 강좌 프로그램을 3개 소개해 달라고 하면 답을 못 합니다.
+//        그 홈페이지에는 수십 가지 프로그램이 안내되어 있습니다."
+//
+// 실제로 재어 보니 수집이 고장난 것이 아니었습니다. 카탈로그 주소가 대문이었고
+// (50plus.or.kr/sch/index.do — 운영시간·전화 2,208자), 강좌표는 한 번 더 눌러야
+// 나오는 /sch/education.do 에 있었습니다. 그 주소는 <그때 있던 코드로> 3,241자가
+// 멀쩡히 읽혔습니다. 아무도 따라가 보지 않았을 뿐입니다.
+//
+// Measured, not guessed: the pipeline was fine and the catalogue URL was one page
+// too shallow. These tests hold that hop, the poster reading that no hop can
+// replace, and the per-question retrieval that keeps thirty courses from being
+// pre-compressed into ten lines.
+
+test('subpages: the course page one click away is followed, the login page is not', async () => {
+  const html = `
+    <a href="/sch/index.do">홈</a>
+    <a href="/sch/education.do">강좌신청</a>
+    <a href="/site/html/htmlView.do?mid=U00056">프로그램 시간표</a>
+    <a href="/member/login.do">로그인</a>
+    <a href="/site/privacy.do">개인정보보호방침</a>
+    <a href="https://other.example.kr/강좌">다른 기관 강좌</a>
+    <a href="/files/2026.pdf">2026 안내문 내려받기</a>
+    <a href="javascript:void(0)">메뉴</a>`;
+  const picked = sourcesMod.pickSubpages(html, 'https://www.50plus.or.kr/sch/index.do');
+  const urls = picked.map((p) => p.url);
+
+  assert.ok(urls.some((u) => u.endsWith('/sch/education.do')), '강좌 page is followed');
+  assert.ok(urls.some((u) => u.includes('mid=U00056')), 'and so is the timetable page');
+  assert.ok(!urls.some((u) => /login/.test(u)), 'the login page is not');
+  assert.ok(!urls.some((u) => /privacy/.test(u)), 'nor the privacy notice');
+  assert.ok(!urls.some((u) => /other\.example\.kr/.test(u)),
+    'and it never leaves the organisation — the relay allow-list is per host');
+  assert.ok(!urls.some((u) => /\.pdf/.test(u)), 'a PDF is a different job, not a page');
+  assert.ok(!urls.some((u) => u.endsWith('/sch/index.do')), 'and it does not re-read itself');
+
+  // 강좌가 먼저입니다 — 예산이 네 장뿐이라 순서가 곧 무엇을 읽느냐입니다.
+  assert.ok(/education\.do/.test(urls[0]),
+    'the course page outranks the rest: with a budget of four, order is what gets read');
+});
+
+test('subpages: the same page reached twice is read once', async () => {
+  // 한국 공공기관 사이트는 주소에 세션 부스러기를 붙입니다. 떼어 내지 않으면
+  // 같은 페이지를 서너 번 읽고 예산을 다 씁니다.
+  const html = `
+    <a href="/edu.do;jsessionid=5BFF8F7D">강좌</a>
+    <a href="/edu.do">강좌 안내</a>
+    <a href="/edu.do#top">강좌 바로가기</a>`;
+  const picked = sourcesMod.pickSubpages(html, 'https://x.example.kr/');
+  assert.strictEqual(picked.length, 1, 'jsessionid, fragment and plain are one page: '
+    + JSON.stringify(picked.map((p) => p.url)));
+});
+
+test('images: the poster is picked and the furniture is not', async () => {
+  // 실제 방배느티나무쉼터 대문에서 가져온 자리들입니다. 크기만으로는 갈라지지
+  // 않습니다 — 그 사이트의 로고가 52KB 입니다.
+  const html = `
+    <img src="/webimage/editor/U2104160001/20260831132428000743.jpg" alt="2026년 4분기 시간표">
+    <img src="/webimage/logo/20210421150441000862.png" alt="로고">
+    <img src="/images/site/common/icon_quickmenu_top_arrow.png" alt="">
+    <img src="/images/site/common/thumbnail_noimage.jpg" alt="">
+    <img src="/webimage/banner/U2104160001/BAST00000024/20250602144553000515.jpg" alt="행사 안내">`;
+  const picked = sourcesMod.pickImages(html, 'http://bntwelfare.magichome.co.kr/main/index.do');
+  const urls = picked.map((p) => p.url);
+
+  assert.ok(urls.some((u) => /editor.*743\.jpg$/.test(u)), 'the timetable poster is read');
+  assert.ok(!urls.some((u) => /logo/.test(u)), 'the logo is not, though it is 52KB');
+  assert.ok(!urls.some((u) => /icon_quickmenu/.test(u)), 'nor an icon');
+  assert.ok(!urls.some((u) => /noimage/.test(u)), 'nor the no-image placeholder');
+  assert.strictEqual(picked[0].title, '2026년 4분기 시간표', 'alt text travels as the title');
+});
+
+test('images: the poster outranks the quick menu, or the budget goes on icons', async () => {
+  // 실제로 일어난 일입니다. /webimage/ 를 '본문 자리' 로 쳤더니, 이 CMS 에서는
+  // 그것이 모든 그림의 뿌리라 퀵메뉴 아이콘이 포스터와 같은 점수를 받았습니다.
+  // 아이콘이 HTML 에서 먼저 나오므로 예산 세 장을 아이콘이 다 썼고, 시간표에는
+  // 닿지도 못했습니다 — 조용히, 아무 오류 없이.
+  const html = `
+    <img src="/webimage/quick_menu/U2104160001/20250602114033000509.png" alt="">
+    <img src="/webimage/quick_menu/U2104160001/20210421151557000855.png" alt="">
+    <img src="/webimage/quick_menu/U2104160001/20210420153610000819.png" alt="">
+    <img src="/webimage/editor/U2104160001/20260831132428000743.jpg" alt="4분기 시간표">`;
+  const picked = sourcesMod.pickImages(html, 'http://bntwelfare.magichome.co.kr/main/index.do');
+  assert.ok(/editor/.test(picked[0].url),
+    'the content image comes first: ' + JSON.stringify(picked.map((p) => p.url)));
+  assert.ok(!picked.some((p) => /quick_menu/.test(p.url)), 'and the quick menu is not read at all');
+});
+
+// ------------------------------------------------- 지어낸 줄 (2026-09-18 실제 사례)
+//
+// 이 층을 처음 돌린 날, 방배느티나무쉼터 요약에 주간 시간표 전체가 들어왔습니다.
+// 월요일 시니어발레, 화요일 요가교실… 실제 포스터와 거의 맞았습니다. 그런데
+// 읽어 온 3,211자 어디에도 '시니어발레' 는 없었습니다. 모델이 지어냈고, 맞았습니다.
+//
+// 맞았다는 점이 더 나쁩니다. 아래 두 시험은 그날 잡힌 것을 그대로 굳혀 둔 것입니다.
+test('an invented timetable is cut, however plausible it reads', async () => {
+  const page = '방배느티나무쉼터 QUICK MENU 쉼터소개 이용안내 프로그램 시간표 운영사업 '
+             + '상담사업 노년사회화교육사업 바리스타 아이느티 초록마을 느티갤러리 '
+             + '[정규] 2026년 4분기 노년사회화교육 추첨 당첨자 안내 2026.09.15 '
+             + '전화 02-581-1210 서울특별시 서초구 남부순환로287길 17-4';
+
+  const invented = '월요일: 시니어발레, 발레핏, 전신스트레칭, 밴드근력운동, 미드영어회화, '
+                 + '팝송영어교실, 스타트영어, 역사문화산책.';
+  assert.ok(!sourcesMod.lineIsGrounded(invented, page),
+    'not one of those programme names is on the page, so the line cannot stand');
+
+  // 같은 줄이라도 <읽어 온 글에 있으면> 남습니다 — 포스터를 눈으로 읽은 경우입니다.
+  assert.ok(sourcesMod.lineIsGrounded(invented, page + '\n' + invented),
+    'once the poster has actually been read, the very same line is fine');
+});
+
+test('a real phone number survives the check, and a rewritten date does too', async () => {
+  // 지어낸 것을 자르려다 진짜를 자르면 더 나쁩니다. 규칙은 <모른다고 말할 때도
+  // 번호는 읽어 드리라>고 못박고 있어서, 번호를 잃는 것이 특히 나쁩니다.
+  const page = '사회복지법인 온누리복지재단(서초50플러스센터) 전화 02-579-5060 '
+             + "제목 : [건강] '누구나 쉽게 시작하는 셔플댄스' (10-11월) | "
+             + '모집기간 : 2026.09.18 ~2026.10.07 | 수강료 : 30,000원 | 정원 : 15';
+
+  assert.ok(sourcesMod.lineIsGrounded('전화번호는 02-579-5060입니다.', page),
+    'the number is on the page, so the line stays — losing a phone number is the '
+    + 'one thing the rules forbid outright');
+
+  // 요약은 숫자를 다시 적습니다: '2026.09.18 ~2026.10.07' → '09.18~10.07'.
+  // 글자로 맞추면 멀쩡한 강좌 열 줄이 통째로 잘립니다. 실제로 그랬습니다.
+  assert.ok(sourcesMod.lineIsGrounded(
+    "'셔플댄스': 모집 09.18~10.07, 수강료 30,000원, 정원 15명.", page),
+    'a date the summary reformatted is the same date, and must not read as invented');
+
+  // 그러나 없는 숫자는 안 됩니다 — 금액과 시각은 어르신이 그대로 믿고 움직이십니다.
+  assert.ok(!sourcesMod.lineIsGrounded("'셔플댄스': 수강료 45,000원.", page),
+    'a fee that is not on the page is refused even though the course name is real');
+});
+
+test('the summary check keeps the English lines in step with the Korean', async () => {
+  const page = '전화 02-581-1210 이용시간 09:00~18:00';
+  const out = sourcesMod.dropUngrounded({
+    ko: '전화는 02-581-1210입니다.\n월요일 시니어발레 수업이 있습니다.\n이용시간은 09:00~18:00입니다.',
+    en: 'Call 02-581-1210.\nBallet on Monday.\nOpen 09:00~18:00.',
+  }, page);
+  assert.strictEqual(out.dropped, 1);
+  assert.ok(!out.ko.includes('시니어발레'), 'the ungrounded Korean line goes');
+  assert.ok(!out.en.includes('Ballet'), 'and so does the English line beside it');
+  assert.ok(out.en.includes('Call 02-581-1210.') && out.en.includes('Open'),
+    'while the grounded pair survives in both languages');
+});
+
+test('chunks: a long course table keeps its header in every piece', async () => {
+  // 머리글 없는 표 조각은 숫자만 늘어선 것입니다 — '30,000원' 이 수강료인지
+  // 지원금인지 알 수 없어지고, 그 둘을 헷갈린 답이 가장 나쁜 답입니다.
+  const header = '제목 | 교육기간 | 강사 | 수강료 | 정원';
+  const rows = Array.from({ length: 20 }, (_, i) =>
+    `강좌${i + 1} | 2026.10.0${(i % 9) + 1} | 강사${i} | ${10 + i},000원 | 15`);
+  const text = '[표]\n' + header + '\n' + rows.join('\n') + '\n\n[본문]\n센터 소개입니다.';
+
+  const chunks = sourcesMod.chunkText(text, { tableRows: 6 });
+  const tableChunks = chunks.filter((c) => c.body.includes('수강료'));
+  assert.ok(tableChunks.length >= 3, 'twenty rows do not fit in one piece: ' + tableChunks.length);
+  for (const c of tableChunks) {
+    assert.ok(c.body.startsWith(header),
+      'every piece carries the header or its numbers mean nothing:\n' + c.body.slice(0, 80));
+  }
+  // 그리고 스무 개가 전부 남아 있어야 합니다 — 요약과 달리 여기서는 버리지 않습니다.
+  const kept = new Set();
+  chunks.forEach((c) => (c.body.match(/강좌\d+/g) || []).forEach((x) => kept.add(x)));
+  assert.strictEqual(kept.size, 20, 'all twenty courses survive chunking, unlike a summary');
+});
+
+test('retrieval: particles are stripped so 강좌를 finds 강좌', async () => {
+  const t = retrievalMod.terms('여기 강좌를 세 개만 소개해 주세요');
+  assert.ok(t.includes('강좌'), '조사를 뗀 형태로도 찾습니다: ' + JSON.stringify(t));
+  assert.ok(!t.includes('주세요'), 'and question filler does not score: ' + JSON.stringify(t));
+});
+
+test('retrieval: the question decides which part of the page is sent', async () => {
+  // 같은 서비스, 같은 페이지 — 그런데 물으신 것에 따라 다른 조각이 가야 합니다.
+  // 이것이 008 요약으로는 할 수 없던 일입니다.
+  const svc = (await shim.query("SELECT id FROM services WHERE code = 's40'")).rows[0];
+  const src = (await shim.query(
+    `INSERT INTO service_sources (service_id, url, fetched_at, status, kind, text)
+     VALUES ($1, 'https://www.50plus.or.kr/sch/education.do', now(), 'ok', 'subpage', 'x')
+     RETURNING id`, [svc.id])).rows[0];
+
+  const put = (ord, heading, body) => shim.query(
+    `INSERT INTO source_chunks (service_id, source_id, url, title, kind, ord, heading, body, chars)
+     VALUES ($1, $2, 'https://www.50plus.or.kr/sch/education.do', '강좌검색', 'subpage', $3, $4, $5, $6)`,
+    [svc.id, src.id, ord, heading, body, body.length]);
+
+  await put(0, '이용안내', '운영시간 평일 09:00~18:00. 전화 02-579-5060. 주소 염곡말길 9.');
+  await put(1, '2026년 서초 2학기 강좌',
+    '제목 | 교육기간 | 수강료 | 정원\n셔플댄스 | 2026.10.08~11.12 | 30,000원 | 15\n'
+    + '어반드로잉 | 2026.10.06~10.27 | 20,000원 | 15\n스마트폰 세계여행 | 2026.10.07~10.28 | 20,000원 | 15');
+
+  const persona = { services: [{ id: svc.id, code: 's40' }] };
+
+  const courses = await retrievalMod.forQuestion(persona, '강좌 프로그램 3개만 소개해 주세요');
+  assert.ok(courses.includes('셔플댄스'), 'a course question brings the course table');
+  assert.ok(courses.includes('30,000원'), 'with the fee attached to it');
+  assert.ok(!courses.includes('02-579-5060'), 'and not the unrelated opening-hours piece');
+
+  const hours = await retrievalMod.forQuestion(persona, '몇 시에 문 여나요');
+  assert.ok(hours.includes('09:00~18:00'), 'and an hours question brings the hours');
+
+  const nothing = await retrievalMod.forQuestion(persona, '안녕하세요');
+  assert.strictEqual(nothing, '', 'a greeting retrieves nothing rather than something at random');
+});
+
+test("TENANT BOUNDARY — retrieval cannot reach a service the centre has not switched on", async () => {
+  // 경계는 persona.services 입니다. 그 목록에 없는 서비스의 조각은, 질문이
+  // 아무리 정확히 겹쳐도 나오지 않아야 합니다.
+  const svc = (await shim.query("SELECT id FROM services WHERE code = 's40'")).rows[0];
+  const empty = await retrievalMod.forQuestion({ services: [] }, '셔플댄스 강좌');
+  assert.strictEqual(empty, '', 'no services, no chunks — not even a matching one');
+
+  const other = (await shim.query("SELECT id FROM services WHERE code = 's3'")).rows[0];
+  const elsewhere = await retrievalMod.forQuestion(
+    { services: [{ id: other.id, code: 's3' }] }, '셔플댄스 강좌 수강료');
+  assert.ok(!elsewhere.includes('셔플댄스'),
+    "another service's chunks stay out, however well they match");
+  assert.ok(svc.id !== other.id, 'the two services really are different rows');
+});
+
+test('the retrieved detail rides in the per-turn block, never the cached one', async () => {
+  // 질문마다 달라지는 것을 캐시되는 앞부분에 넣으면, 매 턴 캐시를 깨뜨립니다 —
+  // 그러면 첫 소리가 늦어지고(§3-6), 비용도 함께 오릅니다.
+  const { systemBlocks } = require('../prompt');
+  const persona = { ieumi_name: '이음이', services: [] };
+  const blocks = systemBlocks(persona, { jobs: [] }, { cache: true, detail: '\n\n[자세한 자료]\n셔플댄스' });
+
+  assert.ok(Array.isArray(blocks) && blocks.length === 2, 'two blocks: stable, then per-turn');
+  assert.ok(blocks[0].cache_control, 'the first is the cached one');
+  assert.ok(!blocks[0].text.includes('셔플댄스'), 'and the detail must not be in it');
+  assert.ok(blocks[1].text.includes('셔플댄스'), 'it belongs in the per-turn block');
+  assert.ok(!blocks[1].cache_control, 'which is not cached');
+});
+
+test('a link one page too shallow is followed, and the courses are stored', async () => {
+  // 클라이언트 사례 그대로의 모양입니다: 대문에는 전화번호, 강좌는 한 칸 뒤.
+  const sources = require('../sources');
+  const svc = (await shim.query("SELECT id, code, sub, link FROM services WHERE code = 's41'")).rows[0];
+  const landing = 'https://public.seocholib.or.kr/';
+
+  const pages = {
+    [landing]: '<a href="/edu/course.do">문화강좌 안내</a><p>' + '도서관 소개입니다. '.repeat(30) + '</p>',
+    'https://public.seocholib.or.kr/edu/course.do':
+      '<table><tr><th>강좌명</th><th>요일</th><th>수강료</th></tr>'
+      + '<tr><td>한글서예</td><td>화 10:00</td><td>무료</td></tr>'
+      + '<tr><td>우쿨렐레</td><td>목 14:00</td><td>20,000원</td></tr></table>'
+      + '<p>' + '접수는 선착순입니다. '.repeat(20) + '</p>',
+  };
+
+  const out = await sources.refreshOne({ ...svc, link: landing }, { force: true, deps: {
+    fetchPage: async (u) => ({ httpStatus: 200, html: pages[u] || '', error: pages[u] ? null : 'HTTP 404' }),
+    summarise: async (_s, text) => {
+      assert.ok(text.includes('우쿨렐레'),
+        'the summariser is shown the course page, not only the front door');
+      return { ko: '문화강좌: 한글서예(화 10:00, 무료), 우쿨렐레(목 14:00, 20,000원).',
+               en: 'Courses: calligraphy, ukulele.' };
+    },
+  } });
+
+  assert.strictEqual(out.status, 'ok');
+  assert.strictEqual(out.subpages, 1, 'one hop was taken');
+
+  const rows = (await shim.query(
+    `SELECT kind, url, text FROM service_sources WHERE service_id = $1 ORDER BY kind`,
+    [svc.id])).rows;
+  assert.ok(rows.some((r) => r.kind === 'landing'), 'the front door is kept');
+  const sub = rows.find((r) => r.kind === 'subpage');
+  assert.ok(sub && /course\.do$/.test(sub.url), 'and the course page beside it');
+  assert.ok(sub.text.includes('우쿨렐레'), 'with its text kept for later, not thrown away');
+
+  const chunks = (await shim.query(
+    'SELECT body FROM source_chunks WHERE service_id = $1', [svc.id])).rows;
+  assert.ok(chunks.some((c) => c.body.includes('우쿨렐레')), 'and cut into retrievable pieces');
+
+  // 그리고 대시보드가 그 깊이를 볼 수 있어야 합니다.
+  const shown = (await call({ method: 'GET', url: '/api/services', cookie: S.admin.cookie }))
+    .body.services.find((x) => x.code === 's41');
+  assert.strictEqual(Number(shown.source_pages), 1, 'the dashboard counts the extra page');
+  assert.ok(Number(shown.source_chunks) > 0, 'and the pieces');
+  assert.ok(shown.source_facts.includes('우쿨렐레'),
+    'and still shows the summary — the extra rows must not displace the landing row');
+});
+
+test('a timetable that exists only as a picture is read, and only when the text is thin', async () => {
+  // 방배느티나무쉼터: 대문 1,039자, '프로그램 시간표' 페이지 486자 — 그 486자가
+  // 전부 메뉴입니다. 10월 시간표는 JPG 한 장으로만 존재합니다. 링크를 고쳐도
+  // 닿지 않는 유일한 경우이고, 그래서 눈이 필요합니다.
+  const sources = require('../sources');
+  const svc = (await shim.query("SELECT id, code, sub, org, link FROM services WHERE code = 's18'")).rows[0];
+  const landing = 'http://bntwelfare.magichome.co.kr/main/index.do';
+  const poster = 'http://bntwelfare.magichome.co.kr/webimage/editor/U2104160001/20260831132428000743.jpg';
+
+  const thin = '<img src="/webimage/editor/U2104160001/20260831132428000743.jpg" alt="4분기 시간표">'
+             + '<p>방배느티나무쉼터입니다. 전화 02-581-1210.</p>';
+  let looked = 0;
+
+  const out = await sources.refreshOne({ ...svc, link: landing }, { force: true, deps: {
+    fetchPage: async () => ({ httpStatus: 200, html: thin, error: null }),
+    fetchBinary: async (u) => {
+      assert.strictEqual(u, poster, 'it reaches for the poster, not the furniture');
+      return { httpStatus: 200, buf: Buffer.alloc(120_000, 1), type: 'image/jpeg', error: null };
+    },
+    describeImage: async () => { looked++; return '2026년 4분기 시간표\n월 10:00-10:50 어울림터 전신스트레칭\n화 10:00-10:50 어울림터 요가교실'; },
+    summarise: async (_s, text) => {
+      assert.ok(text.includes('전신스트레칭'), 'what the poster said reaches the summary');
+      return { ko: '월요일 10시 전신스트레칭, 화요일 10시 요가교실.', en: 'Mon 10:00 stretching.' };
+    },
+  } });
+
+  assert.strictEqual(looked, 1, 'the poster was read once');
+  assert.strictEqual(out.images, 1);
+
+  const img = (await shim.query(
+    "SELECT kind, text FROM service_sources WHERE service_id = $1 AND kind = 'image'",
+    [svc.id])).rows[0];
+  assert.ok(img && img.text.includes('전신스트레칭'), 'and what it said is stored as its own page');
+
+  const chunks = (await shim.query(
+    "SELECT body FROM source_chunks WHERE service_id = $1 AND kind = 'image'", [svc.id])).rows;
+  assert.ok(chunks.some((c) => c.body.includes('요가교실')), 'retrievable like any other page');
+
+  // 그리고 글이 넉넉한 페이지에서는 그림을 보지 않습니다 — 한 장에 모델 호출이
+  // 한 번이고, 대부분의 그림은 장식입니다.
+  looked = 0;
+  const fat = thin + '<p>' + '이용안내와 사업소개가 길게 적혀 있습니다. '.repeat(120) + '</p>';
+  await sources.refreshOne({ ...svc, link: landing }, { force: true, deps: {
+    fetchPage: async () => ({ httpStatus: 200, html: fat, error: null }),
+    fetchBinary: async () => { throw new Error('must not fetch an image when the text is plentiful'); },
+    describeImage: async () => { looked++; return 'x'; },
+    summarise: async () => ({ ko: '이용안내입니다.', en: 'Guide.' }),
+  } });
+  assert.strictEqual(looked, 0, 'a page with plenty of text costs no vision call');
+});
+
+test('five copies of one menu are not mistaken for five pages of content', async () => {
+  // 이것 때문에 시간표 포스터를 건너뛰었습니다.
+  //
+  // extractText 는 <한 페이지 안에서> 되풀이되는 줄만 지웁니다. 한 기관의 다섯
+  // 장은 메뉴가 통째로 같아서, 방배느티나무쉼터가 3,211자를 가진 것처럼 보였고
+  // "글이 넉넉하다"는 판단이 나왔습니다. 실제 내용은 거의 없었고, 유일한 자료인
+  // 시간표는 그림 안에 있었는데도 눈을 뜨지 않았습니다. 조용히 일어난 일입니다.
+  const sources = require('../sources');
+  const svc = (await shim.query("SELECT id, code, sub, link FROM services WHERE code = 's19'")).rows[0];
+  const landing = 'https://nav.example.kr/';
+  const menu = ['쉼터소개', '이용안내', '프로그램 시간표', '운영사업', '자원봉사',
+    '후원 안내 및 문의', '느티소식통', '느티갤러리', '회원가입', '로그인',
+    '전화 02-581-1210', '서울특별시 서초구 남부순환로287길 17-4'].join('</div><div>');
+
+  const shell = (extra) => `<a href="/guide.do">이용안내</a><a href="/time.do">프로그램 시간표</a>`
+    + `<div>${menu}</div>${extra}`;
+  let sawImage = false;
+
+  const out = await sources.refreshOne({ ...svc, link: landing }, { force: true, deps: {
+    fetchPage: async (u) => ({ httpStatus: 200,
+      html: shell(u === landing ? '<img src="/upload/poster.jpg" alt="10월 시간표">' : ''),
+      error: null }),
+    fetchBinary: async () => {
+      sawImage = true;
+      return { httpStatus: 200, buf: Buffer.alloc(90_000, 7), type: 'image/jpeg', error: null };
+    },
+    describeImage: async () => '10월 시간표\n월 10:00 전신스트레칭\n화 10:00 요가교실',
+    summarise: async (_s, text) => {
+      assert.strictEqual(text.split('느티소식통').length - 1, 1,
+        'the shared menu reaches the summariser once, not three times');
+      return { ko: '월 10:00 전신스트레칭, 화 10:00 요가교실.', en: 'Mon 10:00 stretching.' };
+    },
+  } });
+
+  assert.ok(sawImage,
+    'once the duplicated menu is discounted the site is plainly thin, so the poster is read');
+  assert.strictEqual(out.images, 1);
+  assert.ok((out.notes || []).some((n) => /nav only/.test(n)),
+    'and the menu-only sub-pages are named as such: ' + JSON.stringify(out.notes));
+
+  const kinds = (await shim.query(
+    'SELECT kind, count(*) c FROM service_sources WHERE service_id = $1 GROUP BY kind',
+    [svc.id])).rows;
+  const sub = kinds.find((k) => k.kind === 'subpage');
+  assert.ok(!sub || Number(sub.c) === 0, 'a page that is only navigation is not stored as content');
+});
+
+test('a new course on the course page is noticed even when the homepage has not moved', async () => {
+  // 대문 한 장의 해시만 보면, 강좌표에 새 강좌가 열두 개 올라와도 대문이 그대로면
+  // '변경 없음' 으로 지나갑니다 — 이번에 새로 얻은 그 페이지가 첫날 이후 영영
+  // 다시 읽히지 않는 셈입니다. 조용히 굳어 버리는 종류의 고장입니다.
+  const sources = require('../sources');
+  const svc = (await shim.query("SELECT id, code, sub, link FROM services WHERE code = 's20'")).rows[0];
+  const landing = 'https://still.example.kr/';
+  let courses = '<tr><td>한글서예</td><td>무료</td></tr>';
+  let summarised = 0;
+
+  const run = () => sources.refreshOne({ ...svc, link: landing }, { deps: {
+    fetchPage: async (u) => ({ httpStatus: 200, error: null, html: u === landing
+      ? '<a href="/edu.do">강좌 안내</a><p>' + '변하지 않는 대문입니다. '.repeat(30) + '</p>'
+      : '<table><tr><th>강좌명</th><th>수강료</th></tr>' + courses + '</table><p>'
+        + '접수 안내입니다. '.repeat(20) + '</p>' }),
+    summarise: async () => { summarised++; return { ko: '강좌 안내입니다.', en: 'Courses.' }; },
+  } });
+
+  await run();
+  assert.strictEqual(summarised, 1, 'first run reads and summarises');
+
+  await run();
+  assert.strictEqual(summarised, 1, 'nothing changed, so no second model call');
+
+  courses += '<tr><td>우쿨렐레</td><td>20,000원</td></tr>';
+  await run();
+  assert.strictEqual(summarised, 2,
+    'the homepage never moved, but a new course did — that has to be picked up');
+
+  const chunks = (await shim.query(
+    'SELECT body FROM source_chunks WHERE service_id = $1', [svc.id])).rows;
+  assert.ok(chunks.some((c) => c.body.includes('우쿨렐레')), 'and it reaches the retrievable pieces');
+});
+
+test('a poster already transcribed is not paid for a second time', async () => {
+  // 이 CMS 들은 올린 시각으로 파일 이름을 짓습니다 — 포스터가 바뀌면 주소가
+  // 바뀝니다. 같은 주소를 매일 밤 다시 눈으로 읽는 것은 값만 치르는 일입니다.
+  const sources = require('../sources');
+  const svc = (await shim.query("SELECT id, code, sub, link FROM services WHERE code = 's21'")).rows[0];
+  const landing = 'https://poster.example.kr/';
+  let poster = '/upload/20260831.jpg';
+  let looked = 0;
+  let note = '바뀌는 한 줄';
+
+  const run = () => sources.refreshOne({ ...svc, link: landing }, { deps: {
+    fetchPage: async () => ({ httpStatus: 200, error: null,
+      html: `<img src="${poster}" alt="시간표"><p>쉼터입니다. ${note}</p>` }),
+    fetchBinary: async () => ({ httpStatus: 200, buf: Buffer.alloc(80_000, 3),
+                                type: 'image/jpeg', error: null }),
+    describeImage: async () => { looked++; return '10월 시간표\n월 10:00 요가교실\n화 10:00 필라테스'; },
+    summarise: async () => ({ ko: '월 10:00 요가교실.', en: 'Mon 10:00 yoga.' }),
+  } });
+
+  await run();
+  assert.strictEqual(looked, 1, 'the poster is read once');
+
+  note = '또 바뀌는 한 줄';          // 페이지는 바뀌었지만 포스터는 그대로입니다
+  await run();
+  assert.strictEqual(looked, 1, 'the page changed but the poster did not, so no second look');
+
+  poster = '/upload/20261130.jpg';   // 새 포스터가 올라오면 주소가 바뀝니다
+  await run();
+  assert.strictEqual(looked, 2, 'a genuinely new poster is read');
+
+  // 그리고 지난 분기 포스터는 남아 있으면 안 됩니다. 두 시간표가 나란히 있으면
+  // 어느 쪽이 어르신께 나갈지 알 수 없습니다.
+  const rows = (await shim.query(
+    "SELECT url FROM service_sources WHERE service_id = $1 AND kind = 'image'",
+    [svc.id])).rows;
+  assert.strictEqual(rows.length, 1, 'only the current poster is kept: '
+    + JSON.stringify(rows.map((r) => r.url)));
+  assert.ok(rows[0].url.includes('20261130'), 'and it is the new one');
+
+  const chunks = (await shim.query(
+    "SELECT body FROM source_chunks WHERE service_id = $1 AND kind = 'image'", [svc.id])).rows;
+  assert.ok(chunks.length, 'the current poster is still retrievable');
+});
+
+test('a page we chose to follow is tried once; the catalogue link is tried three times', async () => {
+  // 재어 보고 정한 값입니다. 전부 세 번씩 시도했더니 느린 기관 한 곳에서 한
+  // 서비스가 11분 40초 걸렸습니다 — 하위 페이지가 세 번씩 시간 초과를 기다린
+  // 탓입니다. 대문은 놓치면 그 서비스가 하루를 통째로 비우므로 세 번이 맞고,
+  // 따라간 페이지는 없어도 대문이 답하므로 한 번이면 됩니다.
+  const sources = require('../sources');
+  const svc = (await shim.query("SELECT id, code, sub, link FROM services WHERE code = 's22'")).rows[0];
+  const landing = 'https://slow.example.kr/';
+  const seen = [];
+
+  await sources.refreshOne({ ...svc, link: landing }, { force: true, deps: {
+    fetchPage: async (u, opts) => {
+      seen.push([u, opts && opts.tries]);
+      return { httpStatus: 200, error: null, html: u === landing
+        ? '<a href="/edu.do">강좌 안내</a><p>' + '대문입니다. '.repeat(40) + '</p>'
+        : '<p>' + '강좌 안내 본문입니다. '.repeat(40) + '</p>' };
+    },
+    summarise: async () => ({ ko: '강좌 안내입니다.', en: 'Courses.' }),
+  } });
+
+  const front = seen.find(([u]) => u === landing);
+  const followed = seen.find(([u]) => u !== landing);
+  assert.ok(front, 'the catalogue link was fetched');
+  assert.ok(front[1] === undefined, 'and keeps the default three attempts');
+  assert.ok(followed, 'the sub-page was followed');
+  assert.strictEqual(followed[1], 1, 'but gets a single attempt, so a flaky one cannot cost minutes');
+});
+
+test('one bad sub-page does not cost the service the pages that did open', async () => {
+  // 하위 한 장이 흔들렸다고 어제까지 답하던 강좌표가 사라지면, 고치기 전보다
+  // 나빠진 것입니다 — 조용히 나빠지는 쪽이라 더 나쁩니다.
+  const sources = require('../sources');
+  const svc = (await shim.query("SELECT id, code, sub, link FROM services WHERE code = 's41'")).rows[0];
+  const landing = 'https://public.seocholib.or.kr/';
+
+  const out = await sources.refreshOne({ ...svc, link: landing }, { force: true, deps: {
+    fetchPage: async (u) => (u === landing
+      ? { httpStatus: 200, html: '<a href="/edu/course.do">문화강좌 안내</a><p>'
+          + '도서관 소개입니다. '.repeat(30) + '</p>', error: null }
+      : { httpStatus: 503, html: '', error: 'HTTP 503' }),
+    summarise: async () => ({ ko: '도서관 안내입니다.', en: 'Library.' }),
+  } });
+
+  assert.strictEqual(out.status, 'ok', 'the service still answers from what did open');
+  assert.ok((out.notes || []).some((n) => /503/.test(n)), 'and the failure is recorded: '
+    + JSON.stringify(out.notes));
+
+  const kept = (await shim.query(
+    "SELECT text FROM service_sources WHERE service_id = $1 AND kind = 'subpage'",
+    [svc.id])).rows[0];
+  assert.ok(kept && kept.text.includes('우쿨렐레'),
+    "yesterday's course page is still there, and still in the chunks");
+  const chunks = (await shim.query(
+    'SELECT body FROM source_chunks WHERE service_id = $1', [svc.id])).rows;
+  assert.ok(chunks.some((c) => c.body.includes('우쿨렐레')), 'rebuilt from what survives');
 });
 
 // ============================================ 기계어가 말로 나가는 문제 (클라이언트 보고)
