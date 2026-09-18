@@ -1,7 +1,7 @@
 // Postgres access layer. All SQL for the app lives here or in the api modules —
 // nothing above this file talks to `pg` directly.
 const { Pool } = require('pg');
-const env = require('../env');
+const env = require('../env.js');
 
 const DATABASE_URL = env.DATABASE_URL || '';
 
@@ -31,12 +31,27 @@ const ssl =
   : env.DB_SSL === 'no-verify' ? { rejectUnauthorized: false }
   : { rejectUnauthorized: true };
 
+// 서버리스 Postgres(Neon)는 놀고 있으면 스스로 잠듭니다.
+//
+// 그러면 다음 연결은 <깨우는 시간>을 기다려야 합니다. 10초로는 모자랐습니다:
+// 링크 수집처럼 오래 도는 작업은 한 페이지를 브라우저로 여는 데만 30초가 걸려,
+// 그 사이 풀의 연결이 끊기고 다음 저장에서 새 연결을 잡다가 시간이 초과됐습니다.
+// 오류 문구가 "Connection terminated due to connection timeout" 한 줄이라,
+// 데이터베이스가 죽은 것처럼 보이지만 실은 자고 있었을 뿐입니다.
+//
+// Neon suspends when idle, and waking it can take longer than ten seconds. A
+// long batch — one rendered page costs ~30s — leaves the pool idle long enough
+// to be dropped, and the next write then pays the wake-up cost. The error is a
+// single line that reads like a dead database rather than a sleeping one.
+//
+// 살아 있는 동안 연결을 붙잡아 두는 편이 낫습니다 (keepAlive).
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl,
   max: Number(env.DB_POOL_MAX || 10),
-  idleTimeoutMillis: 30_000,
-  connectionTimeoutMillis: 10_000,
+  idleTimeoutMillis: Number(env.DB_IDLE_TIMEOUT_MS || 60_000),
+  connectionTimeoutMillis: Number(env.DB_CONNECT_TIMEOUT_MS || 30_000),
+  keepAlive: true,
 });
 
 pool.on('error', (err) => console.error('[db] idle client error:', err.message));

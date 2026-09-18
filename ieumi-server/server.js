@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const https = require('https');
 
-const env = require('./env');
+const env = require('./env.js');
 const db = require('./db');
 const auth = require('./auth');
 const api = require('./api');

@@ -52,28 +52,31 @@ if "%NODE%"=="" (
 )
 
 REM ---- check the token -------------------------------------------------------
-if not exist ".env" (
+REM  The token may come from the environment; the .env file is one way, not the
+REM  only way. env.js already prefers process.env, so refusing to start without
+REM  the file would block a setup that works perfectly well.
+set TOKSRC=
+if not "%KOREA_RELAY_TOKEN%"=="" set TOKSRC=the environment
+if "%TOKSRC%"=="" if exist ".env" findstr /b /c:"KOREA_RELAY_TOKEN=" .env >nul 2>nul && set TOKSRC=.env
+
+if "%TOKSRC%"=="" (
   echo.
-  echo   No .env file in ieumi-server\
-  echo   Create it with one line:
+  echo   [!] KOREA_RELAY_TOKEN is not set -- not in the environment, and not
+  echo       in ieumi-server\.env. The relay will still start, but anyone who
+  echo       finds the address can use it. Fine locally, not for a tunnel.
   echo.
-  echo       KOREA_RELAY_TOKEN=[a long random string]
+  echo   Either set it for this window:
+  echo       set KOREA_RELAY_TOKEN=[a long random string]
+  echo.
+  echo   Or create the file:
+  echo       echo KOREA_RELAY_TOKEN=[a long random string]^> .env
   echo.
   echo   To generate one:
   echo       node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
   echo.
-  pause
-  exit /b 1
-)
-
-findstr /b /c:"KOREA_RELAY_TOKEN=" .env >nul 2>nul
-if errorlevel 1 (
-  echo.
-  echo   [!] KOREA_RELAY_TOKEN is not set in .env.
-  echo       The relay will still start, but anyone who finds the address
-  echo       can use it. Fine for a local test, not for a tunnel.
-  echo.
   timeout /t 5 /nobreak >nul
+) else (
+  echo   token: from %TOKSRC%
 )
 
 :loop

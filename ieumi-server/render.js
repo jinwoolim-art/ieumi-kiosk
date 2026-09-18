@@ -21,7 +21,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const env = require('./env');
+const env = require('./env.js');
 
 // 기다릴 시간. 한국 공공기관 페이지는 느립니다 — 화면이 채워지기 전에 뱉으면
 // 그냥 빈 껍데기를 한 번 더 읽는 셈입니다.

@@ -20,7 +20,7 @@
 //   node check-links.js --json     결과를 JSON 으로 (두 곳의 결과를 비교할 때)
 const fs = require('fs');
 const path = require('path');
-const env = require('./env');
+const env = require('./env.js');
 const { pfetch } = require('./proxy-fetch');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '

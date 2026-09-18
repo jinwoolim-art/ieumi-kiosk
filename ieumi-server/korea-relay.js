@@ -24,7 +24,7 @@ const fs = require('fs');
 const path = require('path');
 const dns = require('dns').promises;
 const net = require('net');
-const env = require('./env');
+const env = require('./env.js');
 const render = require('./render');
 
 // 껍데기인지 가늠하는 기준 — sources.js 와 같은 값입니다.

@@ -13,7 +13,7 @@
 const http = require('http');
 const https = require('https');
 const db = require('./db');
-const env = require('./env');
+const env = require('./env.js');
 
 const BASE = 'https://apis.data.go.kr/B552474/SenuriService';
 const KEY = env.DATAGO_KEY || '';

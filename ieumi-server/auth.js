@@ -10,7 +10,7 @@
 // stay the only way a center_id reaches a query.
 const crypto = require('crypto');
 const db = require('./db');
-const env = require('./env');
+const env = require('./env.js');
 
 const COOKIE = 'ieumi_sid';
 const SESSION_HOURS = Number(env.SESSION_HOURS || 12);

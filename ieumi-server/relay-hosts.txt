@@ -1,0 +1,17 @@
+# 중계가 열어 줄 도메인 — 카탈로그(seed)에 없는 것만 여기에 적습니다.
+# Extra hostnames the relay may fetch, beyond the ones the catalogue names.
+#
+# 이 파일은 <중계를 돌리는 한국 기기>에 있어야 합니다. 한 줄에 도메인 하나.
+# 다시 띄울 필요는 없습니다 — 처음 거절할 때 이 파일을 다시 읽습니다.
+#
+# This file lives on the Korea machine that runs korea-relay.js, one hostname
+# per line. No restart needed: it is re-read on the first refusal.
+#
+# 아래 네 곳은 대시보드에서 링크를 고치면서 들어온 주소입니다. seed 파일에는
+# 남지 않아, 2026-09-18 동기화에서 중계가 "목록에 없다"며 네 건을 거절했습니다.
+# These four arrived as dashboard link edits and never reached the seed file, so
+# the sync of 2026-09-18 was refused on all four.
+seochobus.seocho.go.kr
+fire.seoul.go.kr
+www.129.go.kr
+www.redcross.or.kr

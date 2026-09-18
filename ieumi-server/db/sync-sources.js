@@ -11,7 +11,7 @@
 //   npm run sync-sources -- --force   내용이 같아도 다시 요약
 const db = require('./index');
 const sources = require('../sources');
-const env = require('../env');
+const env = require('../env.js');
 
 (async () => {
   if (!env.DATABASE_URL) {

@@ -1646,6 +1646,27 @@ test('sources: navigation repeated on every page is dropped', async () => {
   assert.ok(out.includes('생계비 1인 30만원'), 'and the content survives');
 });
 
+test('sources: a real page served with a hostile status code is still read', async () => {
+  // 사랑의복지관(esarang.org)은 <모든> 페이지를 403 으로 돌려주면서 내용은 그대로
+  // 보냅니다 — 이용안내 1,597자, 기관소개 2,413자가 그 안에 다 들어 있었습니다.
+  // 상태 코드만 보고 버렸기 때문에, 서초구 장애인복지관 한 곳이 통째로 비어
+  // 있었습니다. 페이지가 없는 것과 방화벽이 퉁명스러운 것은 다릅니다.
+  //
+  // Measured: that site answers 403 on every page while serving the real thing.
+  // Judged by status alone, a whole disability centre answered nothing.
+  const page = '<h1>이용안내</h1><p>' + '상담 및 직업지원 안내입니다. '.repeat(40) + '</p>';
+  assert.ok(sourcesMod.worthReadingAnyway(page), 'a page with real content is read whatever the status');
+});
+
+test('sources: a firewall notice is not mistaken for a page', async () => {
+  // 위의 구제책이 차단 안내문까지 사실로 요약해 버리면 더 나쁩니다 — 어르신이
+  // "방화벽 보안 정책에 의해 차단되었습니다" 를 안내로 듣게 됩니다.
+  // The salvage must not turn a block notice into facts.
+  const refusal = '<h1>접근이 거부되었습니다</h1><p>' + '방화벽 보안 정책에 의해 차단되었습니다. '.repeat(40) + '</p>';
+  assert.ok(!sourcesMod.worthReadingAnyway(refusal), 'a refusal is discarded even though it is long');
+  assert.ok(!sourcesMod.worthReadingAnyway('<p>짧은 오류</p>'), 'and so is a short error page');
+});
+
 test('the prompt carries checked facts, with where and when', async () => {
   const p = buildSystem({ services: [{ code: 's61', category: '복지', sub: '긴급복지지원',
     description: '위기 가구 지원', org: '서초구청',

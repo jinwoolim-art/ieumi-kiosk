@@ -3,7 +3,7 @@
 const crypto = require('crypto');
 const path = require('path');
 const db = require('./index');
-const env = require('../env');
+const env = require('../env.js');
 const { hashPassword } = require('../auth');
 
 const SERVICES = require('./services.seed.json');

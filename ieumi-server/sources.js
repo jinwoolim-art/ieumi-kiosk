@@ -18,7 +18,7 @@
 // forbids that kind of work inside a turn.
 const crypto = require('crypto');
 const db = require('./db');
-const env = require('./env');
+const env = require('./env.js');
 const render = require('./render');
 const { pfetch } = require('./proxy-fetch');
 
@@ -86,6 +86,25 @@ const textLength = (html) => (html || '')
   .replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '')
   .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().length;
 
+// 차단 안내문인지 보려고 앞부분만 글로 바꿔 봅니다 — check-links.js 와 같은 기준.
+const plainStart = (html) => (html || '')
+  .replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '')
+  .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 800);
+const BLOCKED = /web firewall|방화벽|보안 정책|Access Denied|차단되었습니다|접근이 거부/i;
+
+// 2xx 가 아닌 응답에서 '이 정도면 진짜 페이지'로 볼 글자 수.
+const SALVAGE_CHARS = Number(env.SALVAGE_CHARS || 400);
+
+/**
+ * 상태 코드가 2xx 가 아닌 응답의 본문을 그래도 읽을 것인가.
+ *
+ * 페이지 한 장만큼의 글이 들어 있고, 차단 안내문처럼 읽히지 않을 때만 읽습니다.
+ * Only when it holds a page's worth of text and does not read like a refusal.
+ */
+function worthReadingAnyway(html) {
+  return textLength(html) >= SALVAGE_CHARS && !BLOCKED.test(plainStart(html));
+}
+
 async function relayFetch(url, { render: wantRender = false } = {}) {
   const q = `url=${encodeURIComponent(url)}${wantRender ? '&render=1' : ''}`;
   // 중계는 프록시 뒤에서도 닿아야 합니다 — node 의 fetch 는 HTTPS_PROXY 를
@@ -148,7 +167,10 @@ async function maybeRender(url, html) {
 async function fetchOnce(url) {
   const r = RELAY ? await relayFetch(url, { render: true }) : await directFetch(url);
   const type = r.type;
-  if (r.status < 200 || r.status >= 300) return { httpStatus: r.status, html: '', error: 'HTTP ' + r.status };
+  const ok2xx = r.status >= 200 && r.status < 300;
+  if (!ok2xx && !/html|text/i.test(type)) {
+    return { httpStatus: r.status, html: '', error: 'HTTP ' + r.status };
+  }
   if (!/html|text/i.test(type)) {
     // PDF·ZIP 은 이 경로로 읽지 않습니다 — a binary is a different job, and
     // guessing at one produces confident nonsense.
@@ -167,6 +189,21 @@ async function fetchOnce(url) {
   // 중계를 쓰는 경우에는 중계 쪽에서 이미 브라우저로 열어 봤습니다 — 그 편이
   // 맞습니다. 막힌 사이트는 한국에서만 열리므로, 브라우저도 한국에서 돌아야 합니다.
   if (!RELAY) html = await maybeRender(url, html);
+
+  // 상태 코드가 2xx 가 아니어도, 본문이 멀쩡하면 읽습니다.
+  //
+  // 사랑의복지관(esarang.org)은 <모든> 페이지를 403 으로 돌려주면서 내용은 그대로
+  // 보냅니다 — 이용안내 1,597자, 기관소개 2,413자가 그대로 들어 있습니다. 방화벽
+  // 설정이 그럴 뿐, 페이지가 없는 것이 아닙니다. 상태 코드만 보고 버리면 서초구
+  // 장애인복지관 한 곳이 영영 아무것도 답하지 못합니다.
+  //
+  // esarang.org answers 403 on every page while serving the real content.
+  // Judging by the status code alone loses the whole centre. So a non-2xx reply
+  // is still read — but only when it is long enough to be a page and does not
+  // read like a refusal, or we would be summarising block notices as facts.
+  if (!ok2xx && !worthReadingAnyway(html)) {
+    return { httpStatus: r.status, html: '', error: 'HTTP ' + r.status };
+  }
 
   return { httpStatus: r.status, html, error: null };
 }
@@ -378,4 +415,4 @@ async function refreshAll({ force = false, only = null, onProgress = () => {} } 
   return out;
 }
 
-module.exports = { fetchPage, extractText, tableToText, summarise, refreshOne, refreshAll };
+module.exports = { fetchPage, extractText, tableToText, summarise, refreshOne, refreshAll, worthReadingAnyway };
