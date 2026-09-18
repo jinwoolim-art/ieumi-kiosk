@@ -113,7 +113,21 @@ const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x');
 
   if (u.pathname === '/health') {
-    return json(res, 200, { ok: true, hosts: HOSTS.size, token: !!TOKEN });
+    // 브라우저가 있는지도 함께 알려 줍니다.
+    //
+    // 없으면 자바스크립트로 그리는 페이지는 조용히 껍데기만 읽고 지나갑니다 —
+    // 아무 소리도 나지 않으므로, 나중에 "왜 이 서비스는 자료가 없지" 하고
+    // 한참을 찾게 됩니다. 여기서 한 줄로 보이는 편이 낫습니다.
+    //
+    // Without a browser, JavaScript-built pages are skipped in silence — which
+    // later looks like "why does this service have no facts" and takes an hour
+    // to trace. Better to see it here.
+    return json(res, 200, {
+      ok: true,
+      hosts: HOSTS.size,
+      token: !!TOKEN,
+      renderer: render.available() ? (render.browserPath() || true) : false,
+    });
   }
   if (u.pathname !== '/fetch' || req.method !== 'GET') {
     return json(res, 404, { error: 'not found' });
@@ -188,6 +202,10 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`\n  한국 중계 — Korea fetch relay on http://localhost:${PORT}`);
   console.log(`  허용 도메인 ${HOSTS.size}개 (카탈로그에 적힌 것만)`);
+  console.log(`  토큰 token          ${TOKEN ? '설정됨 set' : '없음 NOT SET'}`);
+  console.log(`  브라우저 renderer   ${render.available()
+    ? '있음 found — 자바스크립트 페이지도 읽습니다'
+    : '없음 NOT FOUND — 자바스크립트로 그리는 페이지는 건너뜁니다 (install Chrome)'}`);
   if (!TOKEN) {
     console.log(`\n  ⚠ KOREA_RELAY_TOKEN 이 설정되지 않았습니다 — 누구나 쓸 수 있습니다.`);
     console.log(`    (not set: anyone who finds the address can use this relay)`);

@@ -1657,6 +1657,48 @@ test('the prompt carries checked facts, with where and when', async () => {
   assert.ok(/그대로 말해도 됩니다/.test(p), 'and the rule permits stating them');
 });
 
+test('a failed refresh does not strip a service of the facts it already had', async () => {
+  // 하룻밤 수집이 실패했다고 어르신이 답을 못 받게 되면 안 됩니다.
+  //
+  // 예전에는 실패하면 status 를 'error' 로 바꿨고, 키오스크는 status='ok' 인
+  // 줄만 읽으므로, 넘겨받은 사실이 아무 데도 쓰이지 못했습니다. 네트워크가 한 번
+  // 흔들린 것과 그 서비스에 자료가 없는 것이 구별되지 않았습니다.
+  //
+  // A wobble in the network must not look the same as a service having no data.
+  const sources = require('../sources');
+  const svc = (await shim.query("SELECT id, code, sub, link FROM services WHERE code = 's3'")).rows[0];
+  const url = 'https://example.test/ok';
+
+  // 먼저 성공한 수집 한 번.
+  await sources.refreshOne({ ...svc, link: url }, { deps: {
+    fetchPage: async () => ({ httpStatus: 200, html: '<p>' + 'x'.repeat(900) + '</p>', error: null }),
+    summarise: async () => ({ ko: '문의 02-1234-5678, 65세 이상.', en: 'Call 02-1234-5678, 65+.' }),
+  } });
+
+  const good = (await shim.query(
+    'SELECT status, facts, fetched_at FROM service_sources WHERE service_id = $1 AND url = $2',
+    [svc.id, url])).rows[0];
+  assert.strictEqual(good.status, 'ok');
+  const readAt = String(good.fetched_at);
+
+  // 이제 같은 링크에서 요약이 실패합니다 (크레딧 소진 등).
+  await sources.refreshOne({ ...svc, link: url }, { force: true, deps: {
+    fetchPage: async () => ({ httpStatus: 200, html: '<p>' + 'y'.repeat(900) + '</p>', error: null }),
+    summarise: async () => { throw new Error('credit balance is too low'); },
+  } });
+
+  const after = (await shim.query(
+    'SELECT status, facts, error, fetched_at FROM service_sources WHERE service_id = $1 AND url = $2',
+    [svc.id, url])).rows[0];
+
+  assert.strictEqual(after.facts, good.facts, 'the facts it already had must survive');
+  assert.strictEqual(after.status, 'ok',
+    'and stay readable — the kiosk only reads status=ok, so error would hide them');
+  assert.ok(/credit/i.test(after.error || ''), 'while the failure is still recorded for the dashboard');
+  assert.strictEqual(String(after.fetched_at), readAt,
+    'and the date must not move: we did not check today, so Ieumi must not say we did');
+});
+
 test('a service with no checked facts keeps the do-not-invent rule', async () => {
   // 자료가 없는 서비스까지 금액을 말하게 되면, 고친 것이 아니라 더 나빠진 것입니다.
   // Loosening the rule for services whose page was never read would not be a fix,

@@ -20,6 +20,7 @@ const crypto = require('crypto');
 const db = require('./db');
 const env = require('./env');
 const render = require('./render');
+const { pfetch } = require('./proxy-fetch');
 
 // 브라우저와 같은 신원으로 요청합니다 — 봇 이름을 쓰면 아예 거부하는 사이트가
 // 있습니다 (fss.or.kr 이 그랬습니다: 봇 UA 는 소켓 끊김, 브라우저 UA 는 HTTP 200).
@@ -87,10 +88,11 @@ const textLength = (html) => (html || '')
 
 async function relayFetch(url, { render: wantRender = false } = {}) {
   const q = `url=${encodeURIComponent(url)}${wantRender ? '&render=1' : ''}`;
-  const r = await fetch(`${RELAY}/fetch?${q}`, {
+  // 중계는 프록시 뒤에서도 닿아야 합니다 — node 의 fetch 는 HTTPS_PROXY 를
+  // 무시하므로 여기서는 pfetch 를 씁니다.
+  const r = await pfetch(`${RELAY}/fetch?${q}`, {
     headers: RELAY_TOKEN ? { 'x-relay-token': RELAY_TOKEN } : {},
-    // 중계가 브라우저까지 띄울 수 있으므로 넉넉히 기다립니다.
-    signal: AbortSignal.timeout(FETCH_MS + 60_000),
+    timeoutMs: FETCH_MS + 60_000,
   });
   if (!r.ok) {
     const why = await r.json().catch(() => ({}));
@@ -322,17 +324,40 @@ async function refreshOne(service, { force = false, deps = {} } = {}) {
 }
 
 async function save(service, url, f) {
+  // 실패했는데 지난번 사실이 남아 있으면, 그 줄은 <그대로 쓸 수 있는 상태로>
+  // 둡니다 — 그리고 확인한 날짜도 그때 그대로 둡니다.
+  //
+  // 예전에는 실패하면 status 를 'error' 로 바꾸면서 facts 는 그대로 넘겨받았는데,
+  // 키오스크는 status='ok' 인 줄만 읽습니다 (kiosk-context.js). 그래서 넘겨받은
+  // 사실이 아무 데도 쓰이지 못했습니다 — 하룻밤 수집이 한 번 실패하면 60개
+  // 서비스가 전부 "담당 선생님께 전해드릴게요" 로 돌아갔습니다. 조용히.
+  //
+  // fetched_at 을 건드리지 않는 것도 같은 이유입니다. 오늘 읽기에 실패했는데
+  // "오늘 확인했다"고 날짜를 새로 찍으면, 이음이가 어르신께 <언제 확인한
+  // 것인지>를 틀리게 말하게 됩니다. 이 프로젝트에서 출처와 날짜는 지어내면
+  // 안 되는 것들입니다.
+  //
+  // A failed run used to set status='error' while carrying the old facts over —
+  // but the kiosk only reads status='ok', so the carried facts reached nobody
+  // and one bad night silently stripped every service back to "I'll pass it to
+  // the staff member". The date is left alone for the same reason: claiming we
+  // checked today when today's fetch failed would make Ieumi misstate its own
+  // provenance, which is the one thing this layer exists to get right.
+  const keepUsable = f.status === 'error' && f.facts;
+  const status = keepUsable ? 'ok' : f.status;
+
   await db.query(
     `INSERT INTO service_sources
        (service_id, url, fetched_at, status, http_status, error, content_hash, raw_chars,
         facts, facts_en, fact_chars)
      VALUES ($1, $2, now(), $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (service_id, url) DO UPDATE SET
-       fetched_at = now(), status = excluded.status, http_status = excluded.http_status,
+       fetched_at = ${keepUsable ? 'service_sources.fetched_at' : 'now()'},
+       status = excluded.status, http_status = excluded.http_status,
        error = excluded.error, content_hash = excluded.content_hash,
        raw_chars = excluded.raw_chars, facts = excluded.facts,
        facts_en = excluded.facts_en, fact_chars = excluded.fact_chars, updated_at = now()`,
-    [service.id, url, f.status, f.http || null, f.error || null, f.hash || null,
+    [service.id, url, status, f.http || null, f.error || null, f.hash || null,
      f.raw || 0, f.facts || null, f.facts_en || null, (f.facts || '').length]);
 }
 

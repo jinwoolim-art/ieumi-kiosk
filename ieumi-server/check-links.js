@@ -15,10 +15,13 @@
 // Deliberately free of both the model and the database: it only opens pages, so
 // it runs with no API credit and no DATABASE_URL — just node and a network.
 //
-//   node check-links.js            카탈로그의 모든 링크
+//   node check-links.js            카탈로그의 모든 링크 (여기에서 직접)
+//   node check-links.js --relay    한국 중계를 거쳐서 (.env 의 KOREA_RELAY_URL)
 //   node check-links.js --json     결과를 JSON 으로 (두 곳의 결과를 비교할 때)
 const fs = require('fs');
 const path = require('path');
+const env = require('./env');
+const { pfetch } = require('./proxy-fetch');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
          + '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -46,23 +49,52 @@ async function catalogue() {
   };
 }
 
+// --relay 를 붙이면 한국 중계를 거쳐서 확인합니다.
+//
+// 기본은 <직접> 입니다. 이 도구의 본래 쓰임이 "여기서 열리는가"를 재어 두 곳을
+// 비교하는 것이라, 아무 말 없이 중계를 타 버리면 그 비교가 무의미해집니다.
+// 그래서 거치려면 분명하게 --relay 라고 말해야 합니다.
+//
+// Direct by default: this tool exists to be run in two places and diffed, and
+// silently routing through the relay would destroy that comparison. Going
+// through it has to be asked for.
+const VIA_RELAY = process.argv.includes('--relay');
+const RELAY = (env.KOREA_RELAY_URL || '').replace(/\/+$/, '');
+const RELAY_TOKEN = env.KOREA_RELAY_TOKEN || '';
+
 // 한 번만 열어 봅니다 — 재시도는 하지 않습니다. 여기서 알고 싶은 것은
 // "이 자리에서 이 사이트가 우리를 받아 주는가" 이지, 오늘 운이 좋았는가가 아닙니다.
 async function probe(url) {
   const t0 = Date.now();
   let r;
   try {
-    r = await fetch(url, {
-      headers: { 'user-agent': UA, accept: 'text/html,application/xhtml+xml' },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-      redirect: 'follow',
-    });
+    r = VIA_RELAY
+      ? await pfetch(`${RELAY}/fetch?url=${encodeURIComponent(url)}`, {
+          headers: RELAY_TOKEN ? { 'x-relay-token': RELAY_TOKEN } : {},
+          timeoutMs: TIMEOUT_MS + 20_000,
+        })
+      : await fetch(url, {
+          headers: { 'user-agent': UA, accept: 'text/html,application/xhtml+xml' },
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+          redirect: 'follow',
+        });
   } catch (e) {
     const code = String((e.cause && (e.cause.code || e.cause.message)) || e.message || '');
     return { verdict: /timeout|abort/i.test(code) ? 'timeout' : 'unreachable',
              detail: code.slice(0, 44), ms: Date.now() - t0 };
   }
-  if (!r.ok) return { verdict: 'http', detail: 'HTTP ' + r.status, ms: Date.now() - t0 };
+  if (!r.ok) {
+    // 중계가 거절한 것과 사이트가 거절한 것은 다른 이야기입니다.
+    if (VIA_RELAY) {
+      const why = await r.json().catch(() => ({}));
+      return { verdict: 'unreachable', detail: 'relay: ' + String(why.error || r.status).slice(0, 38), ms: Date.now() - t0 };
+    }
+    return { verdict: 'http', detail: 'HTTP ' + r.status, ms: Date.now() - t0 };
+  }
+  if (VIA_RELAY) {
+    const up = Number(r.headers.get('x-relay-status')) || 200;
+    if (up < 200 || up >= 300) return { verdict: 'http', detail: 'HTTP ' + up, ms: Date.now() - t0 };
+  }
 
   const body = (await r.text().catch(() => '')) || '';
   const text = body.replace(/<script[\s\S]*?<\/script>/gi, '')
@@ -88,7 +120,8 @@ const MEANING = {
   const json = process.argv.includes('--json');
   if (!json) {
     console.log(`\n  링크 열림 확인 — can these pages be read from here?`);
-    console.log(`  ${rows.length}개 주소 (출처: ${from})\n`);
+    console.log(`  ${rows.length}개 주소 (출처: ${from})`);
+    console.log(`  경로 route: ${VIA_RELAY ? 'via the Korea relay — ' + RELAY : 'direct from here'}\n`);
   }
 
   const out = [];
