@@ -35,6 +35,8 @@
   /* 입력 대체(타이핑) */
   .typerow{position:absolute;bottom:35%;left:6%;right:6%;z-index:7;display:none;gap:6px}
   .typerow.show{display:flex}
+  body.natural .typerow{display:none!important}   /* 자연 대화 모드: 채팅 입력 숨김(음성 전용) */
+  body.natural #talkBtn{display:none!important}    /* 자연 대화 모드: 말씀하기 버튼 숨김(자동으로 들으니 불필요). 문자받기는 유지 */
   .typerow input{flex:1;border:2px solid var(--line);border-radius:12px;padding:10px 12px;font-family:inherit;font-size:15px}
   .typerow button{border:none;background:var(--brand);color:#fff;font-weight:800;border-radius:12px;padding:0 14px;cursor:pointer}
   /* 키패드 */
@@ -227,6 +229,12 @@ function paintTalk(){
   call.classList.toggle('listening', listening);
 }
 
+// 자연 대화 모드 — 버튼 없이 계속 듣고, 답변 중 끼어들면 멈추고 다시 듣습니다.
+// 조용한 부스를 전제로 기본 켜짐. 시끄러운 환경이면 대시보드에서 conversation_mode를
+// 'button'으로 바꿔 예전(버튼) 방식으로 되돌릴 수 있습니다.
+let NATURAL = true;
+let lastSpoken = '';   // 이음이가 방금 말한 문장 — 스피커 소리를 마이크가 되들었을 때(에코) 걸러내는 데 씁니다.
+
 // 짧은 신호음 — 마이크가 실제로 열린 뒤에 "지금부터 말씀하세요"를 귀로 알립니다.
 function beep(){ try{ const ac=new (window.AudioContext||window.webkitAudioContext)();
   const o=ac.createOscillator(), g=ac.createGain(); o.connect(g); g.connect(ac.destination);
@@ -238,21 +246,32 @@ if(SR){ rec=new SR(); rec.lang='ko-KR'; rec.interimResults=false; rec.maxAlterna
   // 곧바로 떠서, 마이크가 열리기 전에 말씀하신 앞부분을 놓쳤습니다.
   rec.onaudiostart=()=>{ if(active){ beep(); setStatus('말씀하세요 🎙️'); } };
   rec.onresult=e=>{
-    const r=e.results[0][0];
+    const r=e.results[e.results.length-1][0];
     const t=(r.transcript||'').trim();
     // 소음 거르기. 글자 수로 자르지는 않습니다 — 한국어에서 "네", "예"는
     // 한 글자짜리 정상 대답이라, 짧다고 버리면 진짜 대답을 버리게 됩니다.
-    // 대신 빈 결과와, 브라우저가 스스로 자신 없다고 말한 결과만 무시합니다.
     const conf = typeof r.confidence==='number' ? r.confidence : 0;
     if(!t || (conf>0 && conf<0.3)){
-      if(active) setStatus('잘 못 들었어요. 다시 한 번 눌러서 말씀해 주세요.');
+      if(active && !NATURAL) setStatus('잘 못 들었어요. 다시 한 번 눌러서 말씀해 주세요.');
       return;
     }
+    // 에코 무시 — 이음이가 말하는 중에 들린 소리가 방금 이음이가 한 말과 겹치면,
+    // 스피커 소리를 마이크가 되들은 것이므로 버립니다.
+    const speaking = draining || speechQueue.length>0;
+    if(speaking && lastSpoken && (lastSpoken.includes(t) || (t.length>=4 && lastSpoken.includes(t.slice(0,4))))) return;
+    // 끼어들기(barge-in) — 이음이가 말하는 중 어르신이 말하면 답변을 멈추고 새 질문을 듣습니다.
+    if(speaking) stopSpeech();
     onUser(t);
   };
-  rec.onerror=()=>{ listening=false; paintTalk();
-    if(active){ setStatus('말이 안 들려요. 아래에 입력해 주세요.'); typerow.classList.add('show'); } };
-  rec.onend=()=>{ listening=false; paintTalk(); };
+  rec.onerror=(ev)=>{ listening=false; paintTalk();
+    if(active && !NATURAL){ setStatus('말이 안 들려요. 아래에 입력해 주세요.'); }
+    // 자연 모드에서 마이크가 잠깐 끊겨도 곧 다시 엽니다(no-speech 등은 정상).
+    if(NATURAL && active && ev && ev.error!=='not-allowed' && ev.error!=='service-not-allowed'){
+      setTimeout(()=>{ if(NATURAL && active && !listening) startListening(); }, 400);
+    } };
+  rec.onend=()=>{ listening=false; paintTalk();
+    // 자연 대화 모드 — 마이크를 계속 열어 둡니다. 한 번 끝나도 대화 중이면 곧 다시 듣습니다.
+    if(NATURAL && active){ setTimeout(()=>{ if(NATURAL && active && !listening) startListening(); }, 200); } };
 }
 
 function startListening(){
@@ -288,6 +307,14 @@ function armIdle(){ clearTimeout(idleTimer); idleTimer=setTimeout(()=>{
  */
 function readyForUser(){
   if(!active) return;
+  // 자연 대화 모드 — 버튼을 기다리지 않고 마이크를 계속 열어 둡니다.
+  if(NATURAL && rec){
+    if(!listening) startListening();
+    actions.classList.add('show');   // 문자받기 버튼은 남기고, 말씀하기 버튼만 CSS로 숨깁니다.
+    setStatus('편하게 말씀하세요');
+    armIdle();
+    return;
+  }
   stopListening();
   actions.classList.add('show');
   if(rec) setStatus('아래 초록 버튼을 누르고 말씀해 주세요');
@@ -334,6 +361,7 @@ function ttsBlob(text){
 function enqueueSpeech(text){
   const clean = stripForSpeech(text);
   if(!clean) return Promise.resolve();
+  lastSpoken = clean;   // 방금 말한 문장 — 에코(스피커→마이크 되들림) 걸러내는 데 씁니다.
   const epoch = speechEpoch;
   let done;
   const finished = new Promise(r=>{ done = r; });
@@ -493,7 +521,7 @@ async function botTurn(){
 async function onUser(text){
   if(!active) return;
   clearIdle();
-  stopListening();
+  if(!NATURAL) stopListening();   // 자연 모드는 마이크를 계속 열어 둡니다(끼어들기 지원)
   actions.classList.remove('show');
   setStatus(''); typerow.classList.remove('show');
   history.push({role:'user',content:text});
@@ -648,6 +676,10 @@ window.addEventListener('pagehide',()=>{ if(active) fileRequest(); });
 // 복지관 설정을 미리 받아 둡니다 (이름·인사말·목소리·명단대조 여부).
 loadContext().then(()=>{
   if(CTX.center) document.title=ieumiName()+' · '+CTX.center.name;
+  // 대화 모드 확정 — 기본은 자연 대화(자동 듣기+끼어들기). 대시보드에서 'button'으로
+  // 바꾸면 예전 버튼 방식으로 돌아갑니다(시끄러운 환경 대비).
+  NATURAL = !(CTX.settings && CTX.settings.conversation_mode==='button');
+  document.body.classList.toggle('natural', NATURAL);
   if(!active) say(waitingScreen());   // 이름을 받아온 뒤 대기화면 소개를 갱신
 });
 </script>
