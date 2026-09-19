@@ -294,20 +294,32 @@ const pickJobs = (where, params, limit = 6) => db.all(
     ORDER BY has_detail DESC, to_date DESC NULLS LAST
     LIMIT ${Number(limit)}`, params);
 
+// 복지관 지역 일자리는 매 대화 턴마다 조회되는데, 야간 sync 전에는 값이 바뀌지
+// 않습니다. 그래서 일자리와 무관한 질문(날씨·병원 등)에도 매번 DB를 왕복하던 것을
+// 5분 캐시로 줄입니다 (§3-6 지연 절감). 날씨(weather.forRegion)와 같은 방식입니다.
+const CENTER_JOBS_TTL_MS = Number(process.env.JOBS_CENTER_TTL_MS || 5 * 60_000);
+const centerJobsCache = new Map();   // "region|limit" -> { at, value }
+
 async function forCenterRegion(region, limit = 6) {
+  const ckey = String(region || '') + '|' + limit;
+  const hit = centerJobsCache.get(ckey);
+  if (hit && Date.now() - hit.at < CENTER_JOBS_TTL_MS) return hit.value;
+
   const parts = String(region || '').trim().split(/\s+/);
   const sido = normaliseSido(parts[0]);
   const sigungu = parts.slice(1).join(' ');
 
+  let value = { jobs: [], scope: 'none', region: region || '' };
   if (sido && sigungu) {
     const local = await pickJobs('sido = $1 AND sigungu = $2', [sido, sigungu], limit);
-    if (local.length) return { jobs: local, scope: 'sigungu', region: `${sido} ${sigungu}` };
+    if (local.length) value = { jobs: local, scope: 'sigungu', region: `${sido} ${sigungu}` };
   }
-  if (sido) {
+  if (value.scope === 'none' && sido) {
     const wide = await pickJobs('sido = $1', [sido], limit);
-    if (wide.length) return { jobs: wide, scope: 'sido', region: sido };
+    if (wide.length) value = { jobs: wide, scope: 'sido', region: sido };
   }
-  return { jobs: [], scope: 'none', region: region || '' };
+  centerJobsCache.set(ckey, { at: Date.now(), value });
+  return value;
 }
 
 // ============================================================ 어르신이 말한 지역

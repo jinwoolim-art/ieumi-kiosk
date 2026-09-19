@@ -13,7 +13,8 @@
     "sync-jobs": "node db/sync-jobs.js"
   },
   "dependencies": {
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "playwright": "^1.63.0"
   },
   "engines": {
     "node": ">=18"

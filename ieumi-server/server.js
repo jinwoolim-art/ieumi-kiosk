@@ -11,6 +11,7 @@ const db = require('./db');
 const auth = require('./auth');
 const api = require('./api');
 const kioskContext = require('./kiosk-context');
+const weather = require('./weather');
 const jobs = require('./jobs');
 
 const AKEY = env.ANTHROPIC_API_KEY;
@@ -354,7 +355,11 @@ const server = http.createServer(async (req, res) => {
 
     if (u.pathname === '/chat' && req.method === 'POST') {
       const { history, jobs, model, c, stream } = JSON.parse((await readBody(req)).toString() || '{}');
-      const persona = await personaFor(c || u.searchParams.get('c'));
+      // 캐시된 persona 객체를 그대로 쓰지 않고 복제한 뒤, 이 대화에만 쓸 실시간
+      // 날씨를 얹습니다. weather.forRegion 자체가 5분 캐시라 매 턴 호출해도 가볍고,
+      // 실패하면 null이라 프롬프트가 "담당 선생님께"로 자연히 받아 줍니다.
+      const persona = { ...(await personaFor(c || u.searchParams.get('c'))) };
+      persona.weather = await weather.forRegion(persona.region);
       const chosen = model || persona.chat_model;
 
       // 일자리는 서버가 이 복지관 지역으로 직접 찾습니다 (§6-P2).
