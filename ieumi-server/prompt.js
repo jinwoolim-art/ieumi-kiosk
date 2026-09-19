@@ -23,12 +23,25 @@ const DEFAULT_PERSONA = kioskContext.DEFAULT_PERSONA;
 // which is the difference between Ieumi being useful and Ieumi inventing a
 // phone number. The link is deliberately absent: a URL read aloud to a senior
 // is noise. It travels by SMS instead (server.js /sms).
+// 서비스 목록 — 제목과 짧은 요약만 항상 싣습니다(캐시되는 고정 블록).
+// 자세한 내용(전화·주소·프로그램 등)은 어르신 질문에 맞는 것만 골라 아래
+// [지금 필요한 자세한 정보]로 그때그때 실어 보냅니다. 60개 상세를 매번 통째로
+// 넣으면 프롬프트가 커져 비용·속도가 나빠지기 때문입니다.
+const oneLine = (d, n = 70) => { const t = (d || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; };
 const servicesText = (services) => (!services || !services.length)
   ? ''
-  : '\n\n[우리 복지관이 안내하는 서비스] — 위에서부터 우선순위입니다\n'
-    + services.map((s, i) =>
-        `${i + 1}. (${s.category}) ${s.sub} — ${s.description}`
-        + (s.org ? ` [담당기관: ${s.org}]` : '')).join('\n');
+  : '\n\n[우리 복지관이 안내하는 서비스] — 위에서부터 우선순위입니다. 자세한 내용은 어르신이 물으시면 아래 [지금 필요한 자세한 정보]로 옵니다.\n'
+    + services.map((s, i) => {
+        const sum = oneLine(s.description);
+        return `${i + 1}. (${s.category}) ${s.sub}` + (s.org ? ` [담당기관: ${s.org}]` : '') + (sum ? ` — ${sum}` : '');
+      }).join('\n');
+
+// 질문과 관련된 서비스의 <전체 상세>를 그때그때 싣는 블록(캐시 안 됨, 질문마다 달라짐).
+// server.js가 질문에 맞춰 고른 것만 들어옵니다. 이음이는 이 내용으로 정확히 답합니다.
+const relevantServicesText = (services) => (!services || !services.length)
+  ? ''
+  : '\n\n[지금 필요한 자세한 정보] — 어르신 질문과 관련된 서비스의 자세한 내용입니다. 이 내용을 근거로 정확히 답하세요.\n'
+    + services.map(s => `● (${s.category}) ${s.sub}${s.org ? ` [${s.org}]` : ''}\n${s.description || ''}`).join('\n\n');
 
 const buildSystem = (p = {}) => {
   const name = p.ieumi_name || DEFAULT_PERSONA.ieumi_name;
@@ -203,6 +216,7 @@ const weatherSection = (weather) => weather
 function systemBlocks(persona, jobsInfo, { cache = true } = {}) {
   const fixed = buildSystem(persona);      // 복지관마다 고정 — stable per centre
   const perTurn = jobsSection(jobsInfo)    // 질문마다 달라짐 — new every turn
+    + relevantServicesText(persona && persona.relevant)
     + weatherSection(persona && persona.weather);
   return cache
     ? [{ type: 'text', text: fixed, cache_control: { type: 'ephemeral' } },

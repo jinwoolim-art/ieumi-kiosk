@@ -87,6 +87,25 @@ const personaFor = (kioskToken) => kioskContext.forToken(kioskToken);
  * senior waits. `fallback` is whatever the page sent, used only when the kiosk
  * has no centre — the static demo — so that still works with no database.
  */
+// 질문과 관련된 서비스만 골라냅니다 (RAG). keywords·제목·기관명이 질문에 들어가면
+// 점수를 매겨 상위 몇 개만 반환 → 그 상세만 프롬프트에 실어 비용·속도를 아낍니다.
+// 하나도 안 걸리면 빈 배열(요약은 목록에 이미 있으니 최소 정보는 유지됩니다).
+function matchServices(question, services, k = 4) {
+  const q = String(question || '');
+  if (!q || !Array.isArray(services) || !services.length) return [];
+  const scored = services.map(s => {
+    let score = 0;
+    if (s.sub && q.includes(s.sub)) score += 4;
+    if (s.org && q.includes(s.org)) score += 4;
+    if (s.category && q.includes(s.category)) score += 1;
+    for (const kw of String(s.keywords || '').split(/[,\s]+/)) {
+      if (kw.length >= 2 && q.includes(kw)) score += 2;
+    }
+    return { s, score };
+  });
+  return scored.filter(x => x.score > 0).sort((a, b) => b.score - a.score).slice(0, k).map(x => x.s);
+}
+
 async function jobsForCenter(persona, fallback, history) {
   const centerRegion = persona && persona.region;
   try {
@@ -360,6 +379,9 @@ const server = http.createServer(async (req, res) => {
       // 실패하면 null이라 프롬프트가 "담당 선생님께"로 자연히 받아 줍니다.
       const persona = { ...(await personaFor(c || u.searchParams.get('c'))) };
       persona.weather = await weather.forRegion(persona.region);
+      // 어르신 질문(가장 최근 발화)에 맞는 서비스 상세만 골라 프롬프트에 싣습니다 (RAG).
+      const lastAsk = (history && history.length) ? String(history[history.length - 1].content || '') : '';
+      persona.relevant = matchServices(lastAsk, persona.services);
       const chosen = model || persona.chat_model;
 
       // 일자리는 서버가 이 복지관 지역으로 직접 찾습니다 (§6-P2).
