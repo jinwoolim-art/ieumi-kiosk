@@ -46,7 +46,7 @@
   @keyframes hangpulse{0%{box-shadow:0 0 0 0 rgba(239,68,68,.55);transform:scale(1)}70%{box-shadow:0 0 0 14px rgba(239,68,68,0);transform:scale(1.06)}100%{box-shadow:0 0 0 0 rgba(239,68,68,0);transform:scale(1)}}
   /* 입력 대체(타이핑) */
   .typerow{position:absolute;bottom:35%;left:6%;right:6%;z-index:7;display:none;gap:6px}
-  .typerow.show{display:flex}
+  .typerow.show{display:none!important}   /* 탐 팀: 채팅 입력창 숨김(음성 전용 키오스크) */
   .typerow input{flex:1;border:2px solid var(--line);border-radius:12px;padding:10px 12px;font-family:inherit;font-size:15px}
   .typerow button{border:none;background:var(--brand);color:#fff;font-weight:800;border-radius:12px;padding:0 14px;cursor:pointer}
   /* 키패드 */
@@ -926,8 +926,8 @@ async function start(){
   const inEn = LANG()==='en';
   const greet=(inEn && CTX.settings && CTX.settings.greeting_en)
     || (!inEn && CTX.settings && CTX.settings.greeting)
-    || (inEn ? ('Hello. I am '+ieumiName()+', here to keep you company. What can I help you with?')
-             : ('안녕하세요, 어르신. 저는 말벗 '+ieumiName()+'예요. 무엇을 도와드릴까요?'));
+    || (inEn ? 'What can I help you with?'
+             : '무엇을 도와드릴까요?');   /* 탐 팀: 인사말 짧게(대기화면에 소개 상시 예정) */
   history.push({role:'assistant',content:greet});
   await speak(greet); readyForUser();
 }
