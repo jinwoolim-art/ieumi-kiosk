@@ -2054,6 +2054,34 @@ test('the retrieved detail rides in the per-turn block, never the cached one', a
   assert.ok(!blocks[1].cache_control, 'which is not cached');
 });
 
+test('the warm-up writes the very cache the real turn reads', async () => {
+  // 예열(server.js warmPrompt)은 질문도 일자리도 날씨도 없이 프롬프트만 보냅니다.
+  // 그것이 값을 하려면 <고정 블록이 한 글자도 다르지 않아야> 합니다 — 캐시는
+  // 바이트로 열쇠를 삼으니, 한 글자만 달라도 어르신의 첫 질문은 여전히 찬 캐시를
+  // 만나고, 우리는 데우는 값만 치르고 아무것도 얻지 못합니다.
+  //
+  // The warm-up sends the prompt with no question, no postings and no weather.
+  // It only pays off if the cached block is byte-identical to the one the real
+  // turn sends: the entry is keyed by those bytes. One character of drift and the
+  // senior's first question still meets a cold cache, and we paid to warm nothing.
+  const { systemBlocks } = require('../prompt');
+  const persona = { ieumi_name: '이음이', services: [], region: '서울특별시 서초구' };
+
+  const warm = systemBlocks({ ...persona },
+    { jobs: [], scope: 'none', region: '' }, { cache: true });
+  const real = systemBlocks({ ...persona, weather: '서초 지금: 맑음, 기온 24도' },
+    { jobs: [{ title: '경비', place: '서초구' }], scope: 'sigungu', region: '서울 서초구' },
+    { cache: true, detail: '\n\n[자세한 자료]\n셔플댄스 화요일' });
+
+  assert.strictEqual(warm[0].text, real[0].text,
+    'the cached block must not move with the jobs, the weather or the question');
+  assert.ok(warm[0].cache_control && real[0].cache_control, 'and both must ask for the cache');
+  // 그리고 달라지는 것들은 전부 뒷블록에 있어야 합니다.
+  assert.ok(real[1].text.includes('셔플댄스'), 'the question-specific detail belongs after it');
+  assert.ok(real[1].text.includes('24도'), 'and so does the weather');
+  assert.ok(!real[0].text.includes('24도'), 'the weather must never reach the cached block');
+});
+
 test('a link one page too shallow is followed, and the courses are stored', async () => {
   // 클라이언트 사례 그대로의 모양입니다: 대문에는 전화번호, 강좌는 한 칸 뒤.
   const sources = require('../sources');

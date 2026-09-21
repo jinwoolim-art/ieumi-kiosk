@@ -292,10 +292,26 @@ let rec=null, listening=false;
 const MIC={
   rate:16000,
   ctx:null, stream:null, src:null, node:null,
-  chunks:[], heardSpeech:false, floor:0, frames:0, silence:0, started:0,
+  chunks:[], heardSpeech:false, floor:0, frames:0, silence:0, speechMs:0, started:0,
   stopping:false,
 };
-const SILENCE_MS=1300;      // 말이 끝나고 이만큼 조용하면 보냅니다
+// 말이 끝나고 얼마나 기다렸다가 보낼 것인가 — 매 턴 그대로 침묵이 됩니다.
+//
+// 1.3초를 한결같이 기다렸습니다. 그런데 한 문장을 다 말씀하신 어르신은 이미
+// 끝내신 것이고, 그 1.3초는 고스란히 "왜 대답이 없지" 하는 시간이 됩니다.
+// 반대로 "어..." 하고 멈추신 분께는 1.3초도 짧습니다 — 말을 자르는 셈입니다.
+// 그래서 <얼마나 말씀하셨는지>로 나눕니다. 충분히 말씀하셨으면 0.9초에 보내고,
+// 아직 한두 마디뿐이면 1.5초까지 기다립니다. 흔한 경우는 0.4초 빨라지고,
+// 망설이시는 경우는 오히려 더 너그러워집니다.
+//
+// A flat 1.3s was silence the senior heard on every single turn. Someone who has
+// finished a whole sentence is done, and that wait is dead air; someone who has
+// managed two syllables is still thinking, and 1.3s cuts them off. Splitting on
+// how much they have actually said makes the common case 0.4s faster and the
+// hesitant case more patient than before.
+const SPOKE_ENOUGH_MS=1200;  // 이만큼 말씀하셨으면 한 생각을 마치신 것으로 봅니다
+const SILENCE_MS=900;        // 그때는 이만큼만 조용하면 보냅니다
+const SILENCE_HESITANT_MS=1500;  // 아직 짧게만 말씀하셨으면 조금 더 기다립니다
 const NO_SPEECH_MS=12000;   // 한 마디도 없으면 그냥 닫습니다 (보내지 않습니다)
 const MAX_MS=20000;         // 클로바 단문 인식 한도 안에서 끊습니다
 // 헛도는 것을 막는 두 개의 눈금. 어르신이 실제로 말씀하신 것이 한 번 들어오면
@@ -363,10 +379,11 @@ async function micReady(){
       // 늘 말하는 중으로, 조용한 날엔 늘 침묵으로 잘못 읽습니다.
       if(MIC.frames<=6){ MIC.floor=Math.max(MIC.floor,rms); return; }
       const gate=Math.max(MIC.floor*2.2, 0.012);
-      if(rms>gate){ MIC.heardSpeech=true; MIC.silence=0; }
+      if(rms>gate){ MIC.heardSpeech=true; MIC.silence=0; MIC.speechMs+=frameMs; }
       else if(MIC.heardSpeech){ MIC.silence+=frameMs; }
       const elapsed=Date.now()-MIC.started;
-      if(MIC.heardSpeech && MIC.silence>=SILENCE_MS) finishListening(true);
+      const waitMs=MIC.speechMs>=SPOKE_ENOUGH_MS ? SILENCE_MS : SILENCE_HESITANT_MS;
+      if(MIC.heardSpeech && MIC.silence>=waitMs) finishListening(true);
       else if(!MIC.heardSpeech && elapsed>NO_SPEECH_MS) finishListening(false);
       else if(elapsed>MAX_MS) finishListening(MIC.heardSpeech);
     };
@@ -382,7 +399,7 @@ async function startListening(){
     // 마이크가 없거나 권한이 거부됨 — 브라우저 인식도 못 씁니다. 타이핑으로.
     typerow.classList.add('show'); setStatus('아래에 입력해 주세요'); return;
   }
-  MIC.chunks=[]; MIC.heardSpeech=false; MIC.floor=0; MIC.frames=0; MIC.silence=0;
+  MIC.chunks=[]; MIC.heardSpeech=false; MIC.floor=0; MIC.frames=0; MIC.silence=0; MIC.speechMs=0;
   MIC.started=Date.now(); MIC.stopping=false;
   try{ if(MIC.ctx.state==='suspended') await MIC.ctx.resume(); }catch(e){}
   MIC.src.connect(MIC.node); MIC.node.connect(MIC.ctx.destination);
@@ -910,24 +927,61 @@ kwrap.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)re
 talkBtn.addEventListener('click',()=>{ if(!active) return; listening ? stopListening() : startListening(); });
 smsBtn.addEventListener('click',()=>{ if(active) openKeypad(); });
 
+// 인사말은 복지관이 써넣은 자료입니다 — 화면 언어에 맞는 쪽을 씁니다.
+// 영어 인사가 비어 있으면 기본 문장을 쓰되, 이음이 이름은 복지관 것을 그대로.
+//
+// 한 곳에서만 만듭니다. 대기 화면에서 미리 합성해 두는 글자와 통화를 시작할 때
+// 말하는 글자가 <한 글자라도> 다르면 캐시가 어긋나서, 미리 만들어 둔 보람이
+// 없어집니다.
+//
+// The greeting is the centre's own content, so it has a column per language
+// rather than a dictionary entry. With no English greeting stored, fall back to
+// a neutral one that still uses this centre's name for Ieumi. Built in one place
+// only: the text pre-synthesised on the idle screen and the text spoken at
+// pick-up must match to the character, or the cached clip is never the one
+// asked for.
+function greetingText(){
+  const inEn = LANG()==='en';
+  return (inEn && CTX.settings && CTX.settings.greeting_en)
+    || (!inEn && CTX.settings && CTX.settings.greeting)
+    || (inEn ? 'What can I help you with?'
+             : '무엇을 도와드릴까요?');   /* 탐 팀: 인사말 짧게(대기화면에 소개 상시 예정) */
+}
+
+// 대기 화면에서 인사말을 미리 합성해 둡니다 (§3-6).
+// 클로바는 한 번에 1.8초쯤 걸립니다. 그 1.8초는 어르신이 통화 버튼을 누르고
+// 아무 소리도 없이 기다리시는 시간이었습니다. 키오스크는 어차피 서 있으니,
+// 그동안 미리 만들어 두면 버튼을 누르는 순간 바로 인사말이 나옵니다.
+//
+// CLOVA takes ~1.8s per call, and that was 1.8s of silence after the senior
+// pressed the call button. The kiosk is standing idle anyway, so it has the clip
+// made in advance and the greeting starts the moment the button is pressed.
+function prewarmGreeting(){
+  try{
+    const t = stripForSpeech(greetingText());
+    if(!t) return;
+    fetch(API+'/tts',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({text:t, c:CTOKEN})}).catch(()=>{});
+  }catch(e){}
+}
+
 // ---- 시작/종료 ----
 async function start(){
   active=true; history=[]; offerSms=false; pickedJob=null; awaitingFollowup=false;
   lastSummary=''; lastCategory=''; smsSent=false; memberInfo=null; phone='';
   lastServiceCode=''; lastServiceName=''; quietRounds=0; emptyRounds=0; sttMode='clova';
   call.classList.remove('invite'); hang.classList.add('show'); actions.classList.remove('show');
-  // 복지관 설정(이름·인사말·목소리)을 먼저 받아옵니다.
-  // 인사말은 복지관이 써넣은 자료입니다 — 화면 언어에 맞는 쪽을 씁니다.
-  // 영어 인사가 비어 있으면 기본 문장을 쓰되, 이음이 이름은 복지관 것을 그대로.
+  // 서버를 미리 깨웁니다 (§3-6). 기다리지 않습니다 — 인사말을 하는 동안 뒤에서
+  // 복지관 설정·날씨·일자리·프롬프트 캐시가 한꺼번에 데워집니다. 어르신이 첫
+  // 질문을 말씀하실 때쯤이면 이미 준비가 끝나 있습니다. 실패해도 그냥 넘어갑니다:
+  // 예열은 빨라지자고 하는 일이지, 통화를 막을 이유가 되어서는 안 됩니다.
   //
-  // The greeting is the centre's own content, so it has a column per language
-  // rather than a dictionary entry. With no English greeting stored, fall back
-  // to a neutral one that still uses this centre's name for Ieumi.
-  const inEn = LANG()==='en';
-  const greet=(inEn && CTX.settings && CTX.settings.greeting_en)
-    || (!inEn && CTX.settings && CTX.settings.greeting)
-    || (inEn ? 'What can I help you with?'
-             : '무엇을 도와드릴까요?');   /* 탐 팀: 인사말 짧게(대기화면에 소개 상시 예정) */
+  // Fired and forgotten while the greeting plays. By the time the senior has
+  // finished asking, the caches the answer needs are already warm. A failure here
+  // is ignored on purpose — warming exists to save time, never to cost a call.
+  try{ fetch(API+'/warm',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({c:CTOKEN, lang:LANG()})}).catch(()=>{}); }catch(e){}
+  const greet=greetingText();
   history.push({role:'assistant',content:greet});
   await speak(greet); readyForUser();
 }
@@ -943,6 +997,7 @@ window.addEventListener('pagehide',()=>{ if(active) fileRequest(); });
 // 복지관 설정을 미리 받아 둡니다 (이름·인사말·목소리·명단대조 여부).
 loadContext().then(()=>{
   if(CTX.center) document.title=ieumiName()+' · '+CTX.center.name;
+  prewarmGreeting();          // 대기 화면에 서 있는 동안 인사말을 미리 만들어 둡니다
 });
 </script>
 

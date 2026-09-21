@@ -8,7 +8,17 @@
 // explicit that a second of delay is what makes the conversation awkward.
 const db = require('./db');
 
-const TTL_MS = Number(process.env.KIOSK_CONTEXT_TTL_MS || 60_000);
+// 1분이었습니다. 한 통화가 1분을 넘기면 도중에 캐시가 식어, 어르신은 같은 대화
+// 안에서 갑자기 한 박자 느려지는 답을 들으셨습니다. 값이 바뀔 때는 대시보드가
+// bust() 로 직접 지우므로(api.js), 짧은 시한은 안전장치가 아니라 그냥 지연이었습니다.
+// 날씨·일자리·프롬프트 캐시와 같은 5분으로 맞춥니다.
+//
+// This was one minute, so a conversation lasting longer than that went cold
+// mid-way and the senior heard one answer arrive a beat later than the rest.
+// Every edit busts the entry explicitly (api.js), so the short window bought no
+// freshness — only latency. Five minutes matches the weather, postings and
+// prompt caches, and one warm-up refreshes all four together.
+const TTL_MS = Number(process.env.KIOSK_CONTEXT_TTL_MS || 5 * 60_000);
 const cache = new Map();   // kiosk token -> { at, value }
 
 const DEFAULT_PERSONA = {

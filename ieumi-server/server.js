@@ -291,7 +291,100 @@ async function callClaudeStream(history, jobsInfo, model, persona, onText, detai
   return { raw: acc, parsed: { ...meta, reply }, usage };
 }
 
+/**
+ * 미리 데워 둡니다 — warm what the first question would otherwise pay for.
+ *
+ * 어르신께서 느리다고 하시는 것은 <첫 질문>입니다. 키오스크가 조용히 서 있는
+ * 동안 여기 모든 캐시가 나란히 식기 때문입니다 — 복지관 설정, 날씨, 일자리,
+ * 그리고 프롬프트 캐시까지. 그래서 두 번째 질문부터는 빠른데 첫 질문만 유독
+ * 느립니다. 어르신은 그 한 번으로 이 기계가 느리다고 판단하십니다.
+ *
+ * 어르신이 통화를 시작하시면 키오스크가 이것을 부릅니다. 인사말을 들으시고
+ * 질문을 말씀하시는 몇 초 사이에 네 가지가 한꺼번에 데워집니다.
+ *
+ * What a senior calls slow is the *first* question. While the kiosk stands idle
+ * every cache expires together — centre settings, weather, postings, and the
+ * prompt cache — so the first question pays all four cold and the rest are fast.
+ * The kiosk calls this the moment someone picks up, and the seconds they spend
+ * listening to the greeting and asking their question are spent warming instead
+ * of waiting. Nothing here is ever awaited by the conversation: a warm-up that
+ * fails or runs late must never be something the senior waits for.
+ */
+async function warmPrompt(persona) {
+  // 질문 없이 프롬프트만 보냅니다. max_tokens 가 0 이라 답은 한 글자도 만들지
+  // 않고 캐시만 씁니다. 캐시는 모델별이고 고정 블록의 바이트로 열쇠를 삼으므로,
+  // 실제 대화와 같은 모델·같은 블록이어야 합니다 — 그래서 systemBlocks 를 그대로 씁니다.
+  //
+  // `max_tokens: 0` runs prefill and writes the cache without generating a reply.
+  // The entry is keyed by model and by the exact bytes of the cached block, so
+  // this goes through the same systemBlocks call the real turn uses. A separately
+  // built string here would warm an entry the conversation never reads.
+  const blocks = systemBlocks(persona, { jobs: [], scope: 'none', region: '' }, { cache: true });
+  if (!Array.isArray(blocks) || !blocks[0]) return;
+  const r = await pfetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST', headers: CLAUDE_HEADERS,
+    body: JSON.stringify({
+      model: persona.chat_model || MODEL,
+      max_tokens: 0,
+      system: [blocks[0]],
+      messages: [{ role: 'user', content: 'warm' }],
+      thinking: THINKING_OFF,
+    }),
+  });
+  if (!r.ok) throw new Error('warm ' + r.status);
+}
+
+/**
+ * 한 복지관의 캐시를 한꺼번에 데웁니다 — 서로 기다릴 이유가 없습니다.
+ *
+ * 실패는 통화를 막지 않지만, 조용히 넘어가지도 않습니다. 예열이 내내 실패하고
+ * 있으면 "빨라졌다"고 믿으면서 실제로는 하나도 안 빨라진 것이라, 그것이 가장
+ * 나쁜 결과입니다. 그래서 로그에 한 줄 남깁니다 — 서버를 지키는 분이 보실 수 있게.
+ *
+ * A failure never blocks the call, but it is not swallowed either: a warm-up
+ * that quietly fails every time leaves everyone believing the kiosk got faster
+ * when nothing changed. One line in the log is what makes that visible.
+ */
+async function warmCenter(token, lang) {
+  const persona = { ...(await personaFor(token)), lang: lang === 'en' ? 'en' : 'ko' };
+  const step = (name, p) => p.then(() => null).catch((e) => `${name}: ${e.message || e}`);
+  const failed = (await Promise.all([
+    step('날씨 weather', weather.forRegion(persona.region)),
+    step('일자리 jobs', jobsForCenter(persona, null, [])),
+    step('프롬프트 캐시 prompt cache', warmPrompt(persona)),
+  ])).filter(Boolean);
+  if (failed.length) console.warn('  예열 일부 실패 — warm-up failed:', failed.join(' | '));
+}
+
+// 같은 말은 두 번 만들지 않습니다 (§3-6).
+//
+// 클로바 음성 합성은 길이와 상관없이 한 번에 1.8초쯤 걸립니다. 그런데 통화마다
+// 똑같이 나가는 말이 있습니다 — 인사말이 그렇고, "죄송해요, 지금은 대답하기
+// 어려워요" 같은 말도 그렇습니다. 어르신이 통화 버튼을 누르고 인사말을 들으실
+// 때까지의 1.8초는, 매번 <이미 만들었던 소리를 다시 만드느라> 기다리신 것입니다.
+//
+// 짧은 말만 담고, 오래 안 쓴 것부터 버립니다. 답변 문장도 짧으면 들어오지만
+// 두 번 나올 일이 없어 자연히 밀려 나가고, 통화마다 불리는 인사말은 불릴 때마다
+// 맨 앞으로 올라와 계속 남습니다.
+//
+// CLOVA costs ~1.8s per call regardless of length, and some lines are spoken at
+// the start of every single conversation — the greeting above all. That 1.8s
+// between pressing the call button and hearing anything was spent rebuilding a
+// clip we had already built. Short texts only, least-recently-used dropped
+// first: answer sentences drift out on their own because they never recur,
+// while the greeting is touched at the start of every call and stays.
+const TTS_CACHE_MAX = Number(env.TTS_CACHE_MAX || 80);
+const TTS_CACHE_MAX_CHARS = 200;
+const ttsCache = new Map();   // "speaker|speed|text" -> Buffer (insertion order = LRU)
+
 async function clovaTTS(text, speaker, speed) {
+  const key = `${speaker || SPEAKER}|${speed || SPEED}|${text}`;
+  const cacheable = !!text && text.length <= TTS_CACHE_MAX_CHARS;
+  if (cacheable && ttsCache.has(key)) {
+    const hit = ttsCache.get(key);
+    ttsCache.delete(key); ttsCache.set(key, hit);   // 다시 맨 앞으로 — touch
+    return hit;
+  }
   const body = new URLSearchParams({
     speaker: speaker || SPEAKER, text, format: 'mp3', speed: speed || SPEED,
   });
@@ -301,7 +394,12 @@ async function clovaTTS(text, speaker, speed) {
     body: body.toString(),
   });
   if (!r.ok) throw new Error('TTS ' + r.status + ' ' + (await r.text()).slice(0, 200));
-  return Buffer.from(await r.arrayBuffer());
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (cacheable) {
+    ttsCache.set(key, buf);
+    if (ttsCache.size > TTS_CACHE_MAX) ttsCache.delete(ttsCache.keys().next().value);
+  }
+  return buf;
 }
 
 // 클로바 음성인식 — 이제 키오스크가 실제로 씁니다.
@@ -385,15 +483,6 @@ const server = http.createServer(async (req, res) => {
       // property of who is standing in front of the screen right now.
       const persona = { ...(await personaFor(c || u.searchParams.get('c'))),
                         lang: lang === 'en' ? 'en' : 'ko' };
-      // 캐시된 persona 를 복제한 위에 이 대화에만 쓸 실시간 날씨를 얹습니다.
-      // weather.forRegion 자체가 5분 캐시라 매 턴 불러도 가볍고, 실패하면 null 이라
-      // 날씨 블록이 조용히 빠지고 프롬프트의 대비 문구가 대신 받아 줍니다.
-      // 질문에 맞는 서비스 상세를 고르는 일은 retrieval.js 가 맡습니다 (아래 systemBlocks).
-      //
-      // The persona is cloned, then this turn's live weather is laid on top.
-      // forRegion caches for five minutes, so calling it every turn is cheap, and a
-      // failure yields null — the weather block simply drops out of the prompt.
-      persona.weather = await weather.forRegion(persona.region);
       const chosen = model || persona.chat_model;
 
       // 일자리는 서버가 이 복지관 지역으로 직접 찾습니다 (§6-P2).
@@ -424,10 +513,19 @@ const server = http.createServer(async (req, res) => {
       // Both are one database round trip, measured at ~350ms each against
       // serverless Postgres. In series that is 0.7s of silence after the senior
       // stops speaking, which is exactly how §3-6's "beat too slow" is built.
-      const [jobsInfo, detail] = await Promise.all([
+      // 날씨도 이 줄에 함께 넣습니다. 예전에는 이 위에서 따로 기다렸는데,
+      // 그러면 캐시가 식었을 때 기상청에 다녀오는 동안 데이터베이스 조회가
+      // 시작도 못 했습니다 — 어르신께는 그만큼 조용한 시간입니다.
+      //
+      // The weather joins this line too. It used to be awaited above, so on a cold
+      // cache the database queries could not even start until the met office had
+      // answered — silence the senior hears in full.
+      const [jobsInfo, detail, nowWeather] = await Promise.all([
         jobsForCenter(persona, jobs, history),
         lastAsked ? retrieval.forQuestion(persona, String(lastAsked.content)) : '',
+        weather.forRegion(persona.region),
       ]);
+      persona.weather = nowWeather;
 
       // Claude answers with a 1-based index into the service list we sent it —
       // an index it cannot get wrong the way it could invent a code. Resolve it
@@ -476,6 +574,19 @@ const server = http.createServer(async (req, res) => {
 
       return json(res, 200, attach(
         await callClaude(history || [], jobsInfo, chosen, persona, detail)));
+    }
+    // 어르신이 통화를 시작하실 때 키오스크가 두드립니다 (§3-6).
+    // 바로 202 로 답하고 데우는 일은 뒤에서 합니다 — 키오스크는 기다리지 않습니다.
+    //
+    // Answered at once; the warming runs behind it. The kiosk fires this and
+    // forgets it, so a slow met office or a cold database can never add a second
+    // to the greeting the senior is listening to.
+    if (u.pathname === '/warm' && req.method === 'POST') {
+      const { c, lang } = JSON.parse((await readBody(req)).toString() || '{}');
+      const token = c || u.searchParams.get('c');
+      json(res, 202, { warming: true });
+      warmCenter(token, lang).catch(() => {});
+      return;
     }
     if (u.pathname === '/tts' && req.method === 'POST') {
       const { text, c } = JSON.parse((await readBody(req)).toString() || '{}');
