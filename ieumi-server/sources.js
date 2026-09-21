@@ -17,6 +17,8 @@
 // at ingest and not in the conversation — one district page is 220KB, and §3-6
 // forbids that kind of work inside a turn.
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const db = require('./db');
 const env = require('./env.js');
 const render = require('./render');
@@ -31,7 +33,30 @@ const { pfetch } = require('./proxy-fetch');
 // one. These are public pages the client asked us to read, once a day.
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
          + '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-const MAX_BYTES = 3_000_000;
+// 무엇을 받아들일 것인가.
+//
+// 예전에는 'text/html,application/xhtml+xml' 만 보냈습니다. 그러면 JSON 만 내주는
+// 서버가 <406 Not Acceptable> 로 거절합니다 — 서초 공공셔틀의 공지 API 가 그랬고,
+// 페이지가 없는 것처럼 보였습니다. 실제로는 우리가 "JSON 은 안 받는다"고 말한
+// 것이었습니다. HTML 을 먼저 원하되, 나머지도 받겠다고 알립니다.
+//
+// Sending only text/html made a JSON-only endpoint answer 406, which read like a
+// dead page when in fact we had told it we would not accept what it had. Prefer
+// HTML, but say we will take the rest.
+const ACCEPT = 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8';
+// 본문에 그림이 박혀 있는 페이지는 정직하게 큽니다.
+//
+// 서초 공공셔틀의 '효도버스 노선 시간표' 공지 <한 건>이 2.4MB 입니다 — 시간표
+// PNG 가 base64 로 본문에 들어 있기 때문입니다. 3MB 로 막아 두면 그 공지가 통째로
+// 'too large' 로 버려집니다. 글로 펴면 몇 백 자밖에 안 되는데도요.
+//
+// 그림 자체는 따로 제한합니다 (MAX_IMAGE_BYTES), 그러니 여기서는 넉넉해도 됩니다.
+//
+// A page with images embedded in its body is legitimately large: one shuttle
+// notice is 2.4MB because the timetable PNG is inlined as base64. Capping at 3MB
+// threw that whole notice away, though its text is a few hundred characters.
+// Images are bounded separately, so this can afford to be generous.
+const MAX_BYTES = Number(env.MAX_PAGE_BYTES || 12_000_000);
 const FETCH_MS = 40_000;   // 한국 공공기관 서버는 느립니다 — 25초로는 모자랐습니다
 
 // ---------------------------------------------------------------- ① 가져오기
@@ -138,7 +163,7 @@ async function relayFetch(url, { render: wantRender = false } = {}) {
 
 async function directFetch(url) {
   const r = await fetch(url, {
-    headers: { 'user-agent': UA, accept: 'text/html,application/xhtml+xml' },
+    headers: { 'user-agent': UA, accept: ACCEPT },
     signal: AbortSignal.timeout(FETCH_MS),
     redirect: 'follow',
   });
@@ -181,6 +206,20 @@ async function fetchOnce(url) {
   const ok2xx = r.status >= 200 && r.status < 300;
   if (!ok2xx && !/html|text/i.test(type)) {
     return { httpStatus: r.status, html: '', error: 'HTTP ' + r.status };
+  }
+  // JSON 은 글로 펴서 읽습니다 (위 jsonToText). 자바스크립트 앱이 공개 REST 로
+  // 내용을 내주는 경우가 있고, 그때는 그것이 유일하게 읽을 수 있는 형태입니다.
+  if (/json/i.test(type)) {
+    const body = r.buf.toString('utf8');
+    try {
+      const lines = jsonToText(JSON.parse(body));
+      // raw 를 함께 돌려주는 것은, 본문 안에 박혀 있는 그림(data: 주소)을
+      // pickImages 가 찾아야 하기 때문입니다. 글에서는 빼고, 그림으로는 읽습니다.
+      return { httpStatus: r.status, html: '', raw: body,
+               json: lines.join('\n'), error: null };
+    } catch {
+      return { httpStatus: r.status, html: '', error: 'bad json' };
+    }
   }
   if (!/html|text/i.test(type)) {
     // PDF·ZIP 은 이 경로로 읽지 않습니다 — a binary is a different job, and
@@ -276,6 +315,24 @@ function tidyUrl(u) {
  * 같은 기관 안에서만 움직입니다. 중계 서버의 허용 목록이 도메인 단위라, 다른
  * 도메인으로 넘어가면 어차피 거절당합니다 — 그리고 그래야 맞습니다.
  */
+/**
+ * 저희가 따로 찾아 둔 자료 주소 (extra-sources.json).
+ *
+ * 자바스크립트 앱은 대문에 따라갈 링크가 없습니다 — 서초 공공셔틀의 대문은
+ * 168자짜리 껍데기입니다. 그런 곳은 사람이 한 번 찾아서 적어 두는 수밖에 없습니다.
+ * 카탈로그의 link 는 어르신께 문자로 가는 주소라 여기에 둘 수 없습니다.
+ *
+ * 파일이 없거나 망가져 있어도 수집은 그대로 돌아갑니다 — 없으면 없는 대로.
+ */
+function extraSources(code) {
+  try {
+    const f = JSON.parse(fs.readFileSync(path.join(__dirname, 'extra-sources.json'), 'utf8'));
+    const e = f[code];
+    const urls = (e && e.urls) || [];
+    return urls.filter((u) => /^https?:\/\//i.test(u));
+  } catch { return []; }
+}
+
 function pickSubpages(html, baseUrl, { max = SUBPAGE_MAX } = {}) {
   let base;
   try { base = new URL(baseUrl); } catch { return []; }
@@ -396,6 +453,29 @@ function pickImages(html, baseUrl, { max = IMAGE_MAX } = {}) {
     }
   };
 
+  // 본문에 박혀 있는 그림 — data:image/png;base64,...
+  //
+  // 한국 관공서 게시판 편집기가 그림을 이렇게 넣는 일이 흔합니다. 주소가 따로
+  // 없으니 받아올 것도 없습니다 — 바이트가 이미 손에 있습니다. 효도버스 노선
+  // 시간표(s53)가 정확히 이 모양입니다: 2.4MB 짜리 공지 하나에 PNG 한 장.
+  //
+  // Korean CMS editors embed images inline like this. There is no URL to fetch —
+  // the bytes are already in hand. Seocho's shuttle timetable is exactly this:
+  // one notice, one embedded PNG.
+  for (const m of (html || '').matchAll(/data:image\/([a-z0-9.+-]+);base64,([A-Za-z0-9+/=]{2000,})/gi)) {
+    let buf;
+    try { buf = Buffer.from(m[2], 'base64'); } catch { continue; }
+    if (!buf || buf.length < MIN_IMAGE_BYTES) continue;
+    // 바이트로 이름을 만듭니다 — 같은 그림이면 같은 이름이라 다시 읽지 않고,
+    // 그림이 바뀌면 이름도 바뀌어 새로 읽습니다.
+    const id = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 32);
+    const key = 'embedded:' + id;
+    if (!seen.has(key)) {
+      seen.set(key, { url: key, title: '본문에 첨부된 안내문', score: 3,
+                      data: buf, type: 'image/' + (m[1] === 'jpg' ? 'jpeg' : m[1]) });
+    }
+  }
+
   for (const m of (html || '').matchAll(/<img\b[^>]*>/gi)) {
     const tag = m[0];
     const src = (tag.match(/\bsrc=["']([^"']+)["']/i) || [])[1]
@@ -429,6 +509,8 @@ Transcribe what it says. Write it out so that someone who cannot see the image k
 Rules:
 - Write in Korean, exactly as the image words it. Do not translate, do not paraphrase, do not summarise.
 - A timetable is the whole point: give every day, every time slot, every room and every programme name. Write one line per entry, like "월 10:00-10:50 어울림터 전신스트레칭". Never write "etc." and never skip a row for brevity.
+- EVERY line must repeat its own labels in full. Never write a heading followed by a bare list of values underneath it — write "양재노인종합복지관 08:35", "양재노인종합복지관 09:35" and so on, one line each, not "양재노인종합복지관: 08:35, 09:35, …". This is not stylistic. These lines get split apart later, and a time that has drifted away from its stop or its day is worse than no time at all: someone stands at the wrong stop at the wrong hour.
+- Where a row and a column both name something (a stop and a direction, a day and a room), put both on every line.
 - Keep every number exactly: times, fees, capacities, phone numbers, dates, deadlines.
 - Keep footnotes and conditions — cancellation rules, who may apply, what to bring.
 - If the image is decoration with no information in it (a logo, a photograph of people, a banner with only a slogan), reply with exactly: NOTHING
@@ -486,6 +568,79 @@ function tableToText(tableHtml) {
     [...m[0].matchAll(/<t[hd][\s\S]*?<\/t[hd]>/gi)].map((c) => cell(c[0])).filter((x) => x !== ''));
   return rows.filter((r) => r.length).map((r) => r.join(' | ')).join('\n');
 }
+
+// 자바스크립트로 그리는 앱이 <공개 JSON> 으로 내용을 내주는 경우.
+//
+// 서초 공공셔틀(s53)이 그렇습니다. 대문은 168자짜리 빈 껍데기이고, 효도버스 노선
+// 시간표는 `/rest/api/v1/notice/notices` 가 돌려주는 JSON 안에 들어 있습니다.
+// 브라우저로 그려도 잡히지 않아서 오래 '읽을 수 없는 서비스' 로 남아 있었습니다.
+//
+// 공개된 주소이고, 사람이 그 화면에서 보는 것과 같은 내용을, 하루 한 번 읽습니다.
+// 로그인이 필요한 것(`/api/...` 는 401)은 읽지 않습니다 — 앞으로도 그렇습니다.
+//
+// Some JavaScript apps hand their content out as public JSON. Seocho's shuttle
+// site is one: the front door is a 168-character shell and the timetable lives in
+// what /rest/api/v1/notice/notices returns. Read once a day, same content a person
+// sees on that screen. Anything behind a login (its /api/... returns 401) is not
+// read, and will not be.
+// raw* 는 대개 같은 내용을 한 번 더 담고 있습니다 (rawContentKo = contentKo).
+// 그대로 두면 같은 글이 두 번 조각으로 들어가 검색 결과를 자기가 밀어냅니다.
+const JSON_SKIP =
+  /^(createdBy|lastModifiedBy|createdByUser|lastModifiedByUser|entityStatus|entityId|createdDate|lastModifiedDate|password|token|sort|pageable|_links|filePath|fileParentPath|raw[A-Z])/;
+
+// 제목으로 쓸 만한 열쇠 — 값을 'key: value' 가 아니라 <한 줄 제목>으로 적습니다.
+//
+// 이게 왜 중요한가: 조각내기(chunkText)는 조각의 첫 줄을 제목으로 삼고, 검색은
+// 제목에 본문의 세 배 점수를 줍니다. 모든 줄을 'titleKo: …' 로 적어 두었더니
+// 공지 열여섯 건이 전부 <첫 번째 공지의 제목>을 뒤집어썼습니다. 문화버스 안내도,
+// 챗봇 홍보도 제목이 '효도버스 노선 시간표' 가 되어, 정작 진짜 시간표를 밀어냈습니다.
+//
+// chunkText takes a chunk's first line as its heading and search weights headings
+// triple. Emitting every field as "titleKo: …" made all sixteen notices inherit the
+// first one's title, so the bus-timetable heading was attached to a chatbot advert
+// — which then outranked the actual timetable.
+const JSON_TITLE = /^(title|subject|name|typeName|heading)/i;
+
+function jsonToText(value, depth = 0, out = []) {
+  if (depth > 6 || out.length > 4000) return out;
+  if (value === null || value === undefined) return out;
+
+  if (Array.isArray(value)) {
+    value.forEach((v) => {
+      // 기록 하나가 끝나면 빈 줄 — chunkText 가 여기서 끊습니다.
+      if (out.length && out[out.length - 1] !== '') out.push('');
+      jsonToText(v, depth + 1, out);
+    });
+    return out;
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value).filter(([k, v]) =>
+      !JSON_SKIP.test(k) && v !== null && v !== '' && v !== undefined);
+    // 제목을 먼저, 그리고 제목답게.
+    entries.sort((a, b) => (JSON_TITLE.test(b[0]) ? 1 : 0) - (JSON_TITLE.test(a[0]) ? 1 : 0));
+    const seen = new Set();
+    for (const [k, v] of entries) {
+      if (typeof v === 'object') { jsonToText(v, depth + 1, out); continue; }
+      const s = String(v);
+      if (/^\d{10,}$/.test(s)) continue;                 // epoch 밀리초 — 읽을 것이 없습니다
+      // 값 안에 HTML 이 들어 있는 경우가 흔합니다 (게시글 본문).
+      const text = /<[a-z][\s\S]*>/i.test(s) ? extractText(stripDataUris(s)) : s;
+      const clean = text.replace(/\s+/g, ' ').trim();
+      if (!clean || seen.has(clean)) continue;           // 같은 값이 여러 열쇠에 반복됩니다
+      seen.add(clean);
+      out.push(JSON_TITLE.test(k) ? clean : k + ': ' + clean);
+    }
+    return out;
+  }
+  const s = String(value).trim();
+  if (s) out.push(s);
+  return out;
+}
+
+// data: 주소는 글이 아니라 그림입니다 — 본문에 그대로 두면 2.4MB 짜리 base64 가
+// 요약 프롬프트로 들어갑니다. 그림은 pickImages 가 따로 집어 갑니다.
+const stripDataUris = (s) =>
+  String(s || '').replace(/data:[a-z]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, '[그림]');
 
 function extractText(html) {
   let s = html
@@ -749,6 +904,10 @@ function dropUngrounded(facts, sourceText) {
 const CHUNK_CHARS = Number(env.CHUNK_CHARS || 900);
 const TABLE_ROWS = Number(env.CHUNK_TABLE_ROWS || 8);
 
+// 여기서부터는 다른 이야기다 — 조각을 반드시 끊어야 하는 줄.
+// 제목 표시(#), 그리고 '1호차'·'월요일'처럼 한 구획을 여는 말.
+const SECTION = /^#{1,4}\s|^\*\*[^*]+\*\*\s*$|^\s*\d+\s*호차|^\s*[월화수목금토일]요일\s*$|^\s*\[[^\]]+\]\s*$/;
+
 /**
  * 읽어 온 글을 조각으로 자릅니다.
  *
@@ -762,10 +921,14 @@ const TABLE_ROWS = Number(env.CHUNK_TABLE_ROWS || 8);
  */
 function chunkText(text, { maxChars = CHUNK_CHARS, tableRows = TABLE_ROWS } = {}) {
   const out = [];
-  const push = (heading, body) => {
+  const push = (heading, body, docTitle) => {
     const b = (body || '').trim();
     if (b.length < 20) return;                     // 부스러기는 담지 않습니다
-    out.push({ ord: out.length, heading: (heading || '').trim().slice(0, 200) || null, body: b });
+    const h = (heading || '').trim();
+    const d = (docTitle || '').trim();
+    // 문서 제목과 그 안의 소제목을 함께 답니다 (둘이 같으면 한 번만).
+    const full = d && h && !h.includes(d) && !d.includes(h) ? d + ' — ' + h : (h || d);
+    out.push({ ord: out.length, heading: full.slice(0, 200) || null, body: b });
   };
 
   // [표] … [본문] 구분을 그대로 씁니다 (extractText 가 붙여 둔 것입니다).
@@ -789,6 +952,17 @@ function chunkText(text, { maxChars = CHUNK_CHARS, tableRows = TABLE_ROWS } = {}
   const looksLikeHeading = (l) =>
     l.length <= 40 && !/[.。!?]$/.test(l) && !/\|/.test(l) && /\S/.test(l);
 
+  // 문서 전체의 제목은 조각마다 함께 답니다.
+  //
+  // 표에 머리글을 조각마다 다시 붙이는 것과 같은 이유입니다. '효도버스 노선 안내'
+  // 라는 제목의 글을 조각내면, 두 번째 조각부터는 '양재노인종합복지관 (22271)'
+  // 같은 <소제목>만 남습니다. 그 조각에는 시각이 가득한데도 '효도버스' 라는 말이
+  // 없어서, 어르신이 "효도버스 몇 시에 와요" 하고 물으시면 검색에서 밀려났습니다.
+  //
+  // Splitting "Hyodo Bus route guide" leaves later chunks headed only by a stop
+  // name. Those chunks hold all the times, but no longer contain the words the
+  // senior used, so they lost to a chunk that merely promised a timetable.
+  let docTitle = null;
   let heading = null;
   let buf = [];
   let size = 0;
@@ -796,9 +970,35 @@ function chunkText(text, { maxChars = CHUNK_CHARS, tableRows = TABLE_ROWS } = {}
 
   for (const line of bodyPart.split('\n')) {
     const l = line.trim();
-    if (!l) continue;
+    // 빈 줄은 기록의 경계입니다 — 공지 한 건, 강좌 한 묶음.
+    //
+    // 무시하고 이어 붙이면 서로 다른 공지가 한 조각에 섞이고, 그 조각의 제목은
+    // 맨 앞 공지의 제목이 됩니다. 너무 잘게 끊기지 않도록, 어느 정도 쌓였을 때만
+    // 끊습니다.
+    //
+    // A blank line is a record boundary. Ignoring it glued unrelated notices into
+    // one chunk that then carried the first notice's title. Only break once the
+    // buffer holds enough to stand on its own.
+    if (!l) { if (size >= 200) flush(); continue; }
+
+    // 구획이 바뀌면 <반드시> 끊습니다 — 크기와 상관없이.
+    //
+    // 한 조각이 1호차 끝과 2호차 머리를 함께 물고 있으면, 그 조각의 제목은
+    // '1호차' 인데 본문에는 2호차 시각이 들어 있게 됩니다. 나중에 그 조각을 읽은
+    // 모델은 2호차 시각을 1호차 것으로 말합니다 — 실제로 그렇게 됐습니다.
+    // 어르신은 오지 않는 버스를 기다리십니다.
+    //
+    // A chunk straddling "1호차" and "2호차" is headed by one and filled with the
+    // other's times, and the model then reads them out under the wrong bus.
+    // Observed. The cost is someone waiting for a bus that is not coming.
+    if (SECTION.test(l) && buf.length) flush();
+
     if (size && size + l.length > maxChars) flush();
-    if (!buf.length && looksLikeHeading(l)) { heading = l; }
+    if (!buf.length && looksLikeHeading(l)) {
+      heading = l;
+      // 첫 제목, 또는 '#' 로 시작하는 줄을 문서 제목으로 봅니다.
+      if (!docTitle || /^#/.test(l)) docTitle = l.replace(/^#+\s*/, '');
+    }
     buf.push(l);
     size += l.length + 1;
   }
@@ -848,12 +1048,18 @@ async function refreshOne(service, { force = false, deps = {} } = {}) {
     return { code: service.code, status: 'error', reason: page.error };
   }
 
-  const text = extractText(page.html);
+  // JSON 으로 온 것은 이미 글로 펴져 있습니다 (jsonToText). 그림을 찾을 때만
+  // 원본을 봅니다 — 본문에 data: 주소로 박혀 있을 수 있습니다.
+  const text = page.json || extractText(page.html);
+  const src = page.html || page.raw || '';
 
   // 대문을 읽었으니, 거기서 한 걸음 더 — 강좌·시간표·신청 안내가 있을 만한 곳.
   // 실패는 한 장씩만 잃습니다. 하위 페이지 하나가 안 열린다고 그 서비스 전체가
   // 자료 없이 남으면, 고치기 전보다 나빠집니다.
-  const pages = [{ url, title: null, kind: 'landing', parent: null, text, http: page.httpStatus }];
+  // raw 를 들고 다닙니다 — 그림은 글이 아니라 원본에서 찾아야 하고, 하위 페이지에
+  // 붙어 있는 그림도 찾아야 하기 때문입니다.
+  const pages = [{ url, title: null, kind: 'landing', parent: null, text,
+                   http: page.httpStatus, raw: src }];
   const notes = [];
 
   // 네 장을 나란히 받아옵니다.
@@ -866,13 +1072,20 @@ async function refreshOne(service, { force = false, deps = {} } = {}) {
   // In series, one service waits out the same slow host four times over — 8m23s
   // for a site whose pages each take ~100s to render. Four concurrent requests
   // to one host is fewer than a browser opens loading that same page.
-  const subs = await Promise.all(pickSubpages(page.html, url).map(async (sub) => {
+  // 대문에서 고른 것 + 저희가 따로 찾아 둔 것 (extra-sources.json).
+  const targets = [
+    ...pickSubpages(src, url),
+    ...extraSources(service.code).map((u) => ({ url: u, title: '자료 출처' })),
+  ];
+
+  const subs = await Promise.all(targets.map(async (sub) => {
     try {
       // 따라간 페이지는 한 번만 — 없어도 대문이 답합니다.
       const p = await get(sub.url, { tries: 1 });
       if (p.error) return { note: sub.url + ': ' + p.error };
       return { page: { url: sub.url, title: sub.title, kind: 'subpage', parent: url,
-                       text: extractText(p.html), http: p.httpStatus } };
+                       text: p.json || extractText(p.html), http: p.httpStatus,
+                       raw: p.html || p.raw || '' } };
     } catch (e) { return { note: sub.url + ': ' + String(e.message || e).slice(0, 80) }; }
   }));
   for (const r of subs) {
@@ -914,7 +1127,23 @@ async function refreshOne(service, { force = false, deps = {} } = {}) {
     }
   }
 
-  const imgs = pickImages(page.html, url);
+  // 그림은 <읽은 모든 장에서> 찾습니다.
+  //
+  // 예전에는 대문에서만 찾았습니다. 그러면 하위 페이지 본문에 붙어 있는 안내문은
+  // 영영 안 보입니다 — 서초 공공셔틀의 시간표가 그 경우였습니다. 대문은 168자짜리
+  // 껍데기이고, 시간표는 공지 JSON 안에 박혀 있습니다. 강좌 페이지에 붙은 포스터도
+  // 같은 이유로 놓쳤을 것입니다.
+  //
+  // Images used to be picked from the front door only, so a notice embedded in a
+  // sub-page was never seen — which is exactly where the shuttle timetable lives.
+  const byUrl = new Map();
+  for (const p of pages) {
+    for (const i of pickImages(p.raw || '', p.url, { max: IMAGE_MAX })) {
+      const prev = byUrl.get(i.url);
+      if (!prev || prev.score < i.score) byUrl.set(i.url, i);
+    }
+  }
+  const imgs = [...byUrl.values()].sort((a, b) => b.score - a.score).slice(0, IMAGE_MAX);
 
   // 바뀌지 않았으면 여기서 멈춥니다 — <대문만이 아니라 따라간 장까지 함께> 보고
   // 판단합니다.
@@ -951,7 +1180,22 @@ async function refreshOne(service, { force = false, deps = {} } = {}) {
   // is the only thing there is.
   const vis = deps.describeImage || describeImage;
   const bin = deps.fetchBinary || fetchBinary;
-  const thinText = pages.reduce((n, p) => n + p.text.length, 0) < VISION_TEXT_FLOOR;
+  // 그림을 볼 것인가.
+  //
+  // ① 글이 얼마 없으면 봅니다 — 그림이 유일한 자료인 경우입니다.
+  // ② 글이 넉넉해도, <본문에 박혀 있는 그림>이 있으면 봅니다.
+  //
+  // ②가 필요한 이유: 게시판 편집기로 본문에 끼워 넣은 그림은 <내용>입니다.
+  // 틀에 박힌 배너나 로고와 다릅니다 — 담당자가 그 자리에 일부러 붙인 것이고,
+  // 한국 관공서 공지에서는 시간표·요금표가 대개 이 모양입니다. 글자 수만 보고
+  // 건너뛰면, 공지 열여섯 건의 제목은 읽고 정작 시간표는 못 읽습니다.
+  //
+  // An image the editor embedded in the body is content, not furniture: in Korean
+  // public notices a timetable or price list is usually exactly that. Judging by
+  // character count alone would read sixteen notice titles and miss the timetable.
+  const totalText = pages.reduce((n, p) => n + p.text.length, 0);
+  const embedded = imgs.some((i) => i.data);
+  const thinText = totalText < VISION_TEXT_FLOOR || embedded;
 
   if (thinText && env.ANTHROPIC_API_KEY) {
     // 전에 읽어 둔 그림은 다시 읽지 않습니다.
@@ -975,7 +1219,10 @@ async function refreshOne(service, { force = false, deps = {} } = {}) {
         continue;
       }
       try {
-        const got = await bin(img.url);
+        // 본문에 박혀 있던 그림은 받아올 것이 없습니다 — 바이트가 이미 있습니다.
+        const got = img.data
+          ? { httpStatus: 200, buf: img.data, type: img.type, error: null }
+          : await bin(img.url);
         if (got.error || !got.buf) { notes.push(img.url + ': ' + (got.error || 'no bytes')); continue; }
         if (got.buf.length < MIN_IMAGE_BYTES) { notes.push(img.url + ': decoration'); continue; }
         if (got.buf.length > MAX_IMAGE_BYTES) { notes.push(img.url + ': too large'); continue; }
@@ -1056,7 +1303,8 @@ async function refreshOne(service, { force = false, deps = {} } = {}) {
   // quarter's timetable alive beside this quarter's, with no way to say which a
   // senior will be read. A page that merely failed today is still linked and is
   // kept; only pages the site no longer points at are removed.
-  const current = [url, ...pickSubpages(page.html, url).map((s) => s.url), ...imgs.map((i) => i.url)];
+  const current = [url, ...targets.map((s) => s.url), ...imgs.map((i) => i.url),
+                   ...pages.filter((p) => p.kind === 'image').map((p) => p.url)];
   const gone = await db.query(
     'DELETE FROM service_sources WHERE service_id = $1 AND url <> ALL($2::text[])',
     [service.id, current]);
@@ -1176,6 +1424,7 @@ async function refreshAll({ force = false, only = null, onProgress = () => {} } 
 module.exports = {
   fetchPage, fetchBinary, extractText, tableToText, summarise, worthReadingAnyway,
   pickSubpages, pickImages, describeImage, chunkText, tidyUrl, rechunk,
+  extraSources, jsonToText,
   dropUngrounded, lineIsGrounded,
   refreshOne, refreshAll,
 };

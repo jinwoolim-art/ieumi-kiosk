@@ -120,12 +120,34 @@ async function search(serviceIds, question, { limit = CANDIDATES } = {}) {
 
   // 제목이 본문보다 무겁습니다 — '2026년 2학기 강좌' 라는 제목 한 줄이, 본문
   // 어딘가를 '강좌' 가 스치는 것보다 훨씬 강한 신호입니다.
+  //
+  // 다만 <제목만> 무거우면 속습니다. '효도버스 노선 시간표' 라는 제목의 공지가
+  // 있었는데, 정작 시간표는 그림 안에 있어서 본문에는 시각이 한 줄도 없었습니다.
+  // 그런데도 제목 점수만으로, 실제 시각이 가득한 조각(그림에서 옮겨 적은 것)을
+  // 밀어냈습니다. 어르신은 "8시 30분부터 5시 30분까지 다녀요" 라는 두루뭉술한
+  // 답을 듣고, 정류장별 시각은 못 들으셨습니다.
+  //
+  // 그래서 두 가지를 더 봅니다.
+  //   ① 시각을 물으셨으면 <시각이 적힌> 조각을, 금액을 물으셨으면 금액이 적힌
+  //      조각을 올려 줍니다. 제목의 약속이 아니라 본문의 내용을 봅니다.
+  //   ② 본문이 거의 없는 조각은 내립니다 — 대개 제목과 부스러기뿐입니다.
+  //
+  // A notice titled "효도버스 노선 시간표" carried no times at all (they were in an
+  // image) and still outranked the transcription that was full of them, on title
+  // score alone. So: reward a chunk that actually contains the kind of thing being
+  // asked for, and demote one that is little more than its own title.
+  const wantsTime  = /몇\s*시|시간|언제|출발|도착|운행|시간표|열|닫/.test(String(question || ''));
+  const wantsMoney = /얼마|비용|수강료|요금|값|무료|가격/.test(String(question || ''));
+
   return db.all(
     `SELECT c.url, c.title, c.kind, c.heading, c.body, c.chars, c.service_id,
             s.sub, s.org,
             to_char(ss.fetched_at, 'YYYY-MM-DD') AS at,
             (SELECT count(*) FROM unnest($2::text[]) q WHERE c.heading ILIKE '%' || q || '%') * 3
           + (SELECT count(*) FROM unnest($2::text[]) q WHERE c.body    ILIKE '%' || q || '%')
+          + CASE WHEN $4 AND c.body ~ '[0-9]{1,2}:[0-9]{2}' THEN 4 ELSE 0 END
+          + CASE WHEN $5 AND c.body ~ '[0-9][0-9,]*\\s*원'   THEN 4 ELSE 0 END
+          + CASE WHEN length(c.body) < 120 THEN -3 ELSE 0 END
               AS score
        FROM source_chunks c
        JOIN services s        ON s.id = c.service_id
@@ -133,7 +155,7 @@ async function search(serviceIds, question, { limit = CANDIDATES } = {}) {
       WHERE c.service_id = ANY($1::uuid[])
       ORDER BY score DESC, c.kind, c.ord
       LIMIT $3`,
-    [serviceIds, t, limit]);
+    [serviceIds, t, limit, wantsTime, wantsMoney]);
 }
 
 /**

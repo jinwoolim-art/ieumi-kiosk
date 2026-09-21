@@ -37,6 +37,17 @@ const PORT = Number(env.KOREA_RELAY_PORT || 8799);
 const TOKEN = env.KOREA_RELAY_TOKEN || '';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
          + '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+// 무엇을 받아들일 것인가.
+//
+// 예전에는 'text/html,application/xhtml+xml' 만 보냈습니다. 그러면 JSON 만 내주는
+// 서버가 <406 Not Acceptable> 로 거절합니다 — 서초 공공셔틀의 공지 API 가 그랬고,
+// 페이지가 없는 것처럼 보였습니다. 실제로는 우리가 "JSON 은 안 받는다"고 말한
+// 것이었습니다. HTML 을 먼저 원하되, 나머지도 받겠다고 알립니다.
+//
+// Sending only text/html made a JSON-only endpoint answer 406, which read like a
+// dead page when in fact we had told it we would not accept what it had. Prefer
+// HTML, but say we will take the rest.
+const ACCEPT = 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8';
 const TIMEOUT_MS = 40_000;
 const MAX_BYTES = 3_000_000;
 
@@ -156,7 +167,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     const r = await fetch(parsed.toString(), {
-      headers: { 'user-agent': UA, accept: 'text/html,application/xhtml+xml' },
+      headers: { 'user-agent': UA, accept: ACCEPT },
       signal: AbortSignal.timeout(TIMEOUT_MS),
       redirect: 'follow',
     });

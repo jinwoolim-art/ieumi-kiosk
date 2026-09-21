@@ -1732,6 +1732,18 @@ test('a failed refresh does not strip a service of the facts it already had', as
     'and the date must not move: we did not check today, so Ieumi must not say we did');
 });
 
+test('today\'s weather is not answered from memory while the API is unapproved', async () => {
+  // 2026-09-18, 한국 서버에서 실제로 나온 답: "오늘은 전국이 대체로 구름 많은
+  // 날씨예요. 강원 동해안은 흐리고 비가…" — 확인한 것이 아무것도 없는데도요.
+  // 기상청 API 는 아직 활용신청이 안 된 상태입니다. 어르신은 그 말을 듣고
+  // 우산 없이 나가십니다. 시간표를 지어내던 것과 같은 종류의 문제입니다.
+  const p = buildSystem({ services: [], general_answers: true });
+  assert.ok(/오늘·내일의 날씨/.test(p), '날씨는 일반 상식으로 답하면 안 되는 목록에 있어야 합니다');
+  assert.ok(/확인이 안 돼서요/.test(p), 'and it must be given the words to say instead');
+  // 계절 당부까지 막으면 쓸모없이 차가워집니다 — 그건 허용됩니다.
+  assert.ok(/계절에 맞는 일반적인 당부/.test(p), 'seasonal advice is still allowed');
+});
+
 test('a service with no checked facts keeps the do-not-invent rule', async () => {
   // 자료가 없는 서비스까지 금액을 말하게 되면, 고친 것이 아니라 더 나빠진 것입니다.
   // Loosening the rule for services whose page was never read would not be a fix,
