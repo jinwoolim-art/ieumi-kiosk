@@ -14,9 +14,21 @@
     background:#f4f3f1 url('assets/prototype/배경칼라.png') center/cover no-repeat;border:2px solid #dfe3e6;border-radius:16px;overflow:hidden;box-shadow:0 30px 70px -25px rgba(0,0,0,.4)}
   .char{position:absolute;left:-5%;bottom:0;width:74%;height:110%;z-index:2;transform:scale(1.5);transform-origin:bottom center}
   .char img{width:100%;height:100%;object-fit:contain;object-position:bottom center}
+  /* 말풍선은 더 이상 글자 수만큼 자라지 않습니다.
+     긴 답변이 오면 말풍선이 화면 밖으로 흘러넘쳐, 어르신 그림과 버튼 위를 덮고
+     끝 문장은 화면 아래로 잘려 나갔습니다 (클라이언트 화면 사진 참고).
+     이제 높이를 정해 두고 그 안에서 굴러갑니다 — 자막이 나오는 대로 아래로
+     따라 내려갑니다.
+     The bubble used to grow with the text and spill outside the frame, covering
+     the character and the buttons, with the last sentences cut off below the
+     screen. It is now bounded and scrolls, following the subtitle down. */
   .bubble{position:absolute;top:6%;right:4%;left:43%;z-index:3;background:#fff;border:3px solid var(--line);border-radius:26px;padding:18px 18px;
-    display:flex;align-items:center;justify-content:center;text-align:center;font-size:23px;line-height:1.45;font-weight:800;color:var(--ink);word-break:keep-all;
-    box-shadow:0 14px 30px -18px rgba(63,143,191,.55);transition:.3s;min-height:120px}
+    display:flex;align-items:center;justify-content:center;text-align:center;font-size:23px;line-height:1.45;font-weight:800;color:var(--ink);word-break:keep-all;white-space:pre-wrap;
+    box-shadow:0 14px 30px -18px rgba(63,143,191,.55);transition:opacity .3s;min-height:120px;
+    max-height:54%;overflow-y:auto;scrollbar-width:none}
+  .bubble::-webkit-scrollbar{display:none}
+  /* 길어지면 글씨를 조금 줄입니다 — 그래도 어르신이 읽을 수 있는 크기입니다. */
+  .bubble.long{font-size:19px;align-items:flex-start}
   .bubble.hide{opacity:0}
   .call{position:absolute;right:9%;bottom:11%;z-index:4;width:110px;height:110px;cursor:pointer;border:none;background:none;padding:0;border-radius:50%}
   .call img{width:100%;height:100%;display:block;border-radius:50%}
@@ -34,9 +46,7 @@
   @keyframes hangpulse{0%{box-shadow:0 0 0 0 rgba(239,68,68,.55);transform:scale(1)}70%{box-shadow:0 0 0 14px rgba(239,68,68,0);transform:scale(1.06)}100%{box-shadow:0 0 0 0 rgba(239,68,68,0);transform:scale(1)}}
   /* 입력 대체(타이핑) */
   .typerow{position:absolute;bottom:35%;left:6%;right:6%;z-index:7;display:none;gap:6px}
-  .typerow.show{display:flex}
-  body.natural .typerow{display:none!important}   /* 자연 대화 모드: 채팅 입력 숨김(음성 전용) */
-  body.natural #talkBtn{display:none!important}    /* 자연 대화 모드: 말씀하기 버튼 숨김(자동으로 들으니 불필요). 문자받기는 유지 */
+  .typerow.show{display:none!important}   /* 탐 팀: 채팅 입력창 숨김(음성 전용 키오스크) */
   .typerow input{flex:1;border:2px solid var(--line);border-radius:12px;padding:10px 12px;font-family:inherit;font-size:15px}
   .typerow button{border:none;background:var(--brand);color:#fff;font-weight:800;border-radius:12px;padding:0 14px;cursor:pointer}
   /* 키패드 */
@@ -85,7 +95,7 @@
        한 줄도 없어서 실제로는 누를 수 없었습니다 — 이음이는 "문자 받기를 누르세요"
        라고 말하는데 화면에는 그 버튼이 없었습니다. -->
   <div class="actions" id="actions">
-    <button id="talkBtn">🎤 말씀하기</button>
+    <button id="talkBtn">🎤 다시 말씀하기</button>
     <button id="smsBtn">📩 문자 받기</button>
   </div>
 
@@ -122,7 +132,7 @@
     </div>
   </div>
   <div class="brandwm">play4.co.kr</div>
-  <div class="note">※ 마이크 권한 허용 필요. 인식 안 되면 하단 입력창으로도 대화됩니다.</div>
+  <div class="note">※ 마이크 권한 허용 필요. 버튼을 누르지 않고 그냥 말씀하시면 됩니다.</div>
 </div>
 
 <script>
@@ -209,117 +219,320 @@ async function fileRequest(){
 }
 
 const setStatus=(t,on=true)=>{statusEl.textContent=t;statusEl.classList.toggle('show',on&&!!t);};
-const say=(t)=>{bubble.innerHTML=t;bubble.classList.remove('hide');};
 
-// ---- 음성 인식 (브라우저 STT) — 눌러서 말하기 ----
+// ---- 자막 ----
+// 이음이가 말하는 속도에 맞춰 글이 나옵니다 (클라이언트 요청).
 //
-// 예전에는 이음이가 답을 마치면 곧바로 마이크를 다시 켰습니다. 조용한 책상에서는
-// 괜찮았지만, 마이크가 주변 소음·정적을 말로 알아듣고 그것이 다시 질문이 되어
-// → 또 답하고 → 또 마이크를 켜는 무한 반복이 일어났습니다. 어르신이 타이핑으로
-// 시작해도 답변 뒤에 마이크가 켜져 똑같이 반복됐습니다.
+// 예전에는 Claude 가 글자를 보내는 대로 말풍선에 다 썼습니다. 글은 몇 백 밀리초
+// 만에 끝까지 나오는데 목소리는 그제야 첫 문장을 읽고 있으니, 화면과 소리가
+// 따로 놀았습니다. 어르신은 이미 다 적힌 긴 글을 보며 소리를 기다리셨습니다.
 //
-// 그래서 이제는 <어르신이 '말씀하기'를 누를 때만> 듣습니다. 자동으로 켜지지
-// 않으니 그 고리 자체가 생기지 않습니다. 경로당은 원래 시끄러운 곳입니다.
+// 이제 글은 <그 문장을 읽는 소리가 재생되는 동안> 그 길이에 맞춰 나옵니다.
+// 소리의 재생 위치(currentTime/duration)를 그대로 따라가므로, 말이 느리면 글도
+// 느리게, 빠르면 빠르게 나옵니다.
+//
+// The text used to be painted as Claude streamed it — the whole answer landed in
+// a few hundred milliseconds while the voice was still on the first sentence.
+// Now each sentence is revealed in step with the clip that speaks it, driven by
+// the audio element's own playback position, so the two can never drift.
+let subtitleDone='';        // 이미 다 읽은 문장들 — 화면에 그대로 남습니다
+let subtitlePending=false;  // 다음 소리가 나올 때 화면을 갈아 끼웁니다
+function subtitleShow(text){
+  bubble.textContent=text;
+  bubble.classList.remove('hide');
+  bubble.classList.toggle('long', text.length>120);
+  bubble.scrollTop=bubble.scrollHeight;   // 새로 나온 글이 늘 보이게
+}
+// 새 답변이 시작되지만, <아직 지우지는 않습니다.>
+//
+// 이음이가 생각하는 몇 초 동안 말풍선을 비워 두면 화면이 멍하니 빕니다. 그래서
+// 앞 답변을 그대로 두었다가, 새 목소리가 실제로 나오는 순간에 갈아 끼웁니다.
+function subtitleNewTurn(){ subtitlePending=true; }
+// 문장과 문장 사이는 한 칸 띄웁니다.
+// 합성에 넘기면서 문장마다 앞뒤 공백을 떼기 때문에, 그냥 이어 붙이면
+// "어르신.무엇을" 처럼 붙어 버립니다 — 읽기 좋으라고 고친 자막에서 그러면
+// 고친 보람이 없습니다.
+function spaced(prev){ return prev && !/\s$/.test(prev) ? prev + ' ' : prev; }
+function subtitleTakeTurn(){ if(subtitlePending){ subtitlePending=false; subtitleDone=''; } }
+function subtitleReset(){ subtitleDone=''; subtitlePending=false; bubble.textContent=''; bubble.classList.remove('long'); }
+
+// 정적인 화면 문구(대기 화면 등)는 예전처럼 한 번에 씁니다 — 읽어 줄 소리가 없습니다.
+const say=(t)=>{subtitleDone='';bubble.innerHTML=t;bubble.classList.toggle('long',(bubble.textContent||'').length>120);bubble.classList.remove('hide');};
+
+// ---- 음성 인식 (클로바) — 누르지 않고 그냥 말씀하시면 됩니다 ----
+//
+// 어르신들이 버튼 누르고 말하는 것을 불편해하십니다 (클라이언트 요청). 그래서
+// 이음이가 말을 마치면 마이크가 저절로 열립니다. 어르신은 그냥 말씀하시면 됩니다.
+//
+// <그런데 예전에 자동으로 열었을 때 무한 반복이 났습니다.> 마이크가 주변 소음과
+// 이음이 자신의 목소리를 말로 알아듣고, 그것이 다시 질문이 되어 → 또 답하고 →
+// 또 열리는 고리였습니다. 그래서 이번에는 세 가지를 막아 두었습니다:
+//   ① 이음이가 말하는 동안에는 마이크를 아예 연결하지 않습니다 (재생이 다 끝나고
+//      0.3초 뒤에 엽니다). 자기 목소리가 들어올 구멍 자체가 없습니다.
+//   ② 소리 크기를 재서, <말이 시작된 뒤에> 조용해질 때만 끊어 보냅니다.
+//      말이 한 번도 없었으면 아무것도 보내지 않습니다 — 조용한 방에서 혼자
+//      말을 만들어 내던 것이 바로 그 고리의 시작이었습니다.
+//   ③ 브라우저의 에코 제거·소음 억제를 켭니다.
+//
+// 인식은 브라우저 내장 기능이 아니라 <클로바>가 합니다. 브라우저 인식은 어르신
+// 말씀을 자주 놓쳤습니다. 보내는 소리는 16kHz 모노 WAV 입니다 — MediaRecorder 가
+// 만드는 webm/opus 는 클로바가 받지 않기 때문에, 여기서 직접 만듭니다.
+//
+// Listening is automatic again, which is what the client asked for — seniors
+// find press-to-talk awkward. The loop that made press-to-talk necessary is
+// prevented at the source instead: the microphone is not connected at all while
+// Ieumi is speaking, and a recording is only sent if speech was actually heard.
+// Recognition is CLOVA rather than the browser's, which missed a great deal of
+// what seniors said. CLOVA will not accept MediaRecorder's webm/opus, so raw PCM
+// is captured and wrapped as 16 kHz mono WAV here.
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let sttMode='clova';        // 클로바가 안 되면 브라우저 인식으로 내려앉습니다
 let rec=null, listening=false;
 
+const MIC={
+  rate:16000,
+  ctx:null, stream:null, src:null, node:null,
+  chunks:[], heardSpeech:false, floor:0, frames:0, silence:0, speechMs:0, started:0,
+  stopping:false,
+};
+// 말이 끝나고 얼마나 기다렸다가 보낼 것인가 — 매 턴 그대로 침묵이 됩니다.
+//
+// 1.3초를 한결같이 기다렸습니다. 그런데 한 문장을 다 말씀하신 어르신은 이미
+// 끝내신 것이고, 그 1.3초는 고스란히 "왜 대답이 없지" 하는 시간이 됩니다.
+// 반대로 "어..." 하고 멈추신 분께는 1.3초도 짧습니다 — 말을 자르는 셈입니다.
+// 그래서 <얼마나 말씀하셨는지>로 나눕니다. 충분히 말씀하셨으면 0.9초에 보내고,
+// 아직 한두 마디뿐이면 1.5초까지 기다립니다. 흔한 경우는 0.4초 빨라지고,
+// 망설이시는 경우는 오히려 더 너그러워집니다.
+//
+// A flat 1.3s was silence the senior heard on every single turn. Someone who has
+// finished a whole sentence is done, and that wait is dead air; someone who has
+// managed two syllables is still thinking, and 1.3s cuts them off. Splitting on
+// how much they have actually said makes the common case 0.4s faster and the
+// hesitant case more patient than before.
+const SPOKE_ENOUGH_MS=1200;  // 이만큼 말씀하셨으면 한 생각을 마치신 것으로 봅니다
+const SILENCE_MS=900;        // 그때는 이만큼만 조용하면 보냅니다
+const SILENCE_HESITANT_MS=1500;  // 아직 짧게만 말씀하셨으면 조금 더 기다립니다
+const NO_SPEECH_MS=12000;   // 한 마디도 없으면 그냥 닫습니다 (보내지 않습니다)
+const MAX_MS=20000;         // 클로바 단문 인식 한도 안에서 끊습니다
+// 헛도는 것을 막는 두 개의 눈금. 어르신이 실제로 말씀하신 것이 한 번 들어오면
+// 둘 다 0 으로 돌아갑니다 (onUser).
+let quietRounds=0;          // 아무 소리도 없이 닫힌 횟수
+let emptyRounds=0;          // 소리는 났는데 말이 아니었던 횟수
+
 function paintTalk(){
-  talkBtn.textContent = listening ? '🔴 듣고 있어요 (누르면 멈춤)' : '🎤 말씀하기';
+  talkBtn.textContent = listening ? '🔴 듣고 있어요 (다 하시면 눌러 주세요)' : '🎤 다시 말씀하기';
   talkBtn.classList.toggle('on', listening);
   call.classList.toggle('listening', listening);
 }
 
-// 자연 대화 모드 — 버튼 없이 계속 듣고, 답변 중 끼어들면 멈추고 다시 듣습니다.
-// 조용한 부스를 전제로 기본 켜짐. 시끄러운 환경이면 대시보드에서 conversation_mode를
-// 'button'으로 바꿔 예전(버튼) 방식으로 되돌릴 수 있습니다.
-let NATURAL = true;
-let lastSpoken = '';   // 이음이가 방금 말한 문장 — 스피커 소리를 마이크가 되들었을 때(에코) 걸러내는 데 씁니다.
+// 소리 → WAV. 클로바가 받는 형식입니다.
+function wavFromPcm(chunks, rate){
+  let len=0; for(const c of chunks) len+=c.length;
+  const buf=new ArrayBuffer(44+len*2), v=new DataView(buf);
+  const w=(o,s)=>{ for(let i=0;i<s.length;i++) v.setUint8(o+i,s.charCodeAt(i)); };
+  w(0,'RIFF'); v.setUint32(4,36+len*2,true); w(8,'WAVE'); w(12,'fmt ');
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,rate,true); v.setUint32(28,rate*2,true); v.setUint16(32,2,true);
+  v.setUint16(34,16,true); w(36,'data'); v.setUint32(40,len*2,true);
+  let o=44;
+  for(const c of chunks) for(let i=0;i<c.length;i++,o+=2){
+    const s=Math.max(-1,Math.min(1,c[i]));
+    v.setInt16(o, s<0 ? s*0x8000 : s*0x7FFF, true);
+  }
+  return new Blob([buf],{type:'audio/wav'});
+}
 
-// 짧은 신호음 — 마이크가 실제로 열린 뒤에 "지금부터 말씀하세요"를 귀로 알립니다.
-function beep(){ try{ const ac=new (window.AudioContext||window.webkitAudioContext)();
-  const o=ac.createOscillator(), g=ac.createGain(); o.connect(g); g.connect(ac.destination);
-  o.type='sine'; o.frequency.value=880; g.gain.value=0.08; o.start();
-  setTimeout(()=>{ try{o.stop();ac.close();}catch(e){} },150);
-}catch(e){} }
+// 마이크는 통화 한 번에 한 번만 엽니다 — 매번 열면 그때마다 반 초가 날아갑니다.
+async function micReady(){
+  if(MIC.stream) return true;
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
+  try{
+    MIC.stream=await navigator.mediaDevices.getUserMedia({audio:{
+      echoCancellation:true, noiseSuppression:true, autoGainControl:true,
+    }});
+    const AC=window.AudioContext||window.webkitAudioContext;
+    // 16kHz 로 직접 받습니다 — 브라우저가 알아서 변환해 주므로 여기서 다시
+    // 샘플을 솎아낼 필요가 없습니다.
+    try{ MIC.ctx=new AC({sampleRate:MIC.rate}); }catch(e){ MIC.ctx=new AC(); }
+    MIC.rate=MIC.ctx.sampleRate;
+    MIC.src=MIC.ctx.createMediaStreamSource(MIC.stream);
+    // ScriptProcessorNode 는 오래된 방식이지만, 원본 PCM 을 얻는 가장 확실한
+    // 길입니다. AudioWorklet 은 별도 파일이 필요해서 이 한 장짜리 화면에는
+    // 맞지 않습니다. 키오스크는 크롬에서 돕니다.
+    MIC.node=MIC.ctx.createScriptProcessor(2048,1,1);
+    MIC.node.onaudioprocess=(e)=>{
+      // 이 마디를 스피커로 내보내지 않습니다.
+      // ScriptProcessorNode 는 스피커에 이어 놓아야 동작하는데, 출력 버퍼를
+      // 그대로 두면 브라우저에 따라 마이크 소리가 스피커로 되돌아 나갈 수
+      // 있습니다 — 키오스크가 자기 소리를 다시 듣는, 바로 그 고리입니다.
+      const outb=e.outputBuffer.getChannelData(0);
+      outb.fill(0);
+      if(!listening) return;                       // 듣는 중이 아닐 때는 버립니다
+      const inb=e.inputBuffer.getChannelData(0);
+      MIC.chunks.push(new Float32Array(inb));
+      let sum=0; for(let i=0;i<inb.length;i++) sum+=inb[i]*inb[i];
+      const rms=Math.sqrt(sum/inb.length);
+      const frameMs=(inb.length/MIC.rate)*1000;
+      MIC.frames++;
+      // 처음 여섯 조각(약 0.8초)으로 이 방이 얼마나 시끄러운지 잽니다.
+      // 경로당은 조용한 사무실이 아닙니다 — 고정된 기준값을 쓰면 시끄러운 날엔
+      // 늘 말하는 중으로, 조용한 날엔 늘 침묵으로 잘못 읽습니다.
+      if(MIC.frames<=6){ MIC.floor=Math.max(MIC.floor,rms); return; }
+      const gate=Math.max(MIC.floor*2.2, 0.012);
+      if(rms>gate){ MIC.heardSpeech=true; MIC.silence=0; MIC.speechMs+=frameMs; }
+      else if(MIC.heardSpeech){ MIC.silence+=frameMs; }
+      const elapsed=Date.now()-MIC.started;
+      const waitMs=MIC.speechMs>=SPOKE_ENOUGH_MS ? SILENCE_MS : SILENCE_HESITANT_MS;
+      if(MIC.heardSpeech && MIC.silence>=waitMs) finishListening(true);
+      else if(!MIC.heardSpeech && elapsed>NO_SPEECH_MS) finishListening(false);
+      else if(elapsed>MAX_MS) finishListening(MIC.heardSpeech);
+    };
+    return true;
+  }catch(e){ MIC.stream=null; return false; }
+}
+
+async function startListening(){
+  if(!active || listening) return;
+  if(sttMode==='browser') return startBrowserListening();
+  const ok=await micReady();
+  if(!ok){
+    // 마이크가 없거나 권한이 거부됨 — 브라우저 인식도 못 씁니다. 타이핑으로.
+    typerow.classList.add('show'); setStatus('아래에 입력해 주세요'); return;
+  }
+  MIC.chunks=[]; MIC.heardSpeech=false; MIC.floor=0; MIC.frames=0; MIC.silence=0; MIC.speechMs=0;
+  MIC.started=Date.now(); MIC.stopping=false;
+  try{ if(MIC.ctx.state==='suspended') await MIC.ctx.resume(); }catch(e){}
+  MIC.src.connect(MIC.node); MIC.node.connect(MIC.ctx.destination);
+  listening=true; paintTalk();
+  setStatus('말씀하세요 🎙️');
+}
+
+// 마이크를 닫고, 말이 있었으면 클로바로 보냅니다.
+async function finishListening(send){
+  if(!listening || MIC.stopping) return;
+  MIC.stopping=true;
+  listening=false; paintTalk();
+  try{ MIC.src.disconnect(MIC.node); MIC.node.disconnect(); }catch(e){}
+  const chunks=MIC.chunks; MIC.chunks=[];
+  if(!send || !chunks.length){
+    // 한 마디도 없었습니다. 아무것도 보내지 않습니다 — 조용한 방을 말로
+    // 알아듣고 스스로 대화를 이어가던 것이 예전의 그 무한 반복이었습니다.
+    //
+    // 다만 한 번은 더 열어 드립니다. 어르신은 생각하시는 데 시간이 걸리고,
+    // 12초는 짧습니다. 그래도 아무 말씀이 없으면 화면으로 여쭙니다.
+    if(!active) return;
+    if(quietRounds<1){ quietRounds++; return startListening(); }
+    setStatus('말씀하시려면 아래 초록 버튼을 눌러 주세요. 입력하셔도 됩니다.');
+    typerow.classList.add('show');
+    return;
+  }
+  setStatus('알아듣는 중…');
+  try{
+    const wav=wavFromPcm(chunks, MIC.rate);
+    const r=await fetch(API+'/stt?lang='+LANG(),{method:'POST',
+      headers:{'content-type':'application/octet-stream'}, body:wav});
+    const d=await r.json().catch(()=>({}));
+    const t=(d.text||'').trim();
+    if(d.error && SR){
+      // 클로바가 막혀 있으면(키 미설정·미승인) 브라우저 인식으로 내려앉습니다.
+      // 어르신께는 아무 말도 하지 않습니다 — 그냥 계속 듣습니다.
+      sttMode='browser'; setStatus(''); return startBrowserListening();
+    }
+    if(!t){
+      // 소리는 났는데 말이 아니었습니다(기침·문 닫는 소리·옆자리 대화).
+      // 두 번까지만 다시 듣습니다 — 시끄러운 방에서 끝없이 되풀이하면
+      // 어르신은 가만히 서 계시는데 기계만 혼자 바쁩니다.
+      if(!active) return;
+      setStatus('잘 못 들었어요. 한 번만 더 말씀해 주세요.');
+      if(emptyRounds<2){ emptyRounds++; return startListening(); }
+      typerow.classList.add('show');
+      return;
+    }
+    setStatus('');
+    onUser(t);
+  }catch(e){
+    if(active){ setStatus('잘 못 들었어요. 한 번만 더 말씀해 주세요.'); typerow.classList.add('show'); }
+  }
+}
+
+// 어르신이 "다 말했어요" 하고 버튼을 누르셨을 때 — 지금까지 들은 것을 보냅니다.
+function stopListening(){
+  if(listening && sttMode==='clova'){ finishListening(MIC.heardSpeech); return; }
+  if(rec && listening){ try{ rec.stop(); }catch(e){} }
+  listening=false; paintTalk();
+}
+
+/**
+ * 듣던 것을 그냥 버립니다 — 보내지 않습니다.
+ *
+ * 어르신이 말씀 대신 타이핑을 하시거나 키패드를 여셨을 때 씁니다. 이때 녹음된
+ * 것을 인식에 보내면, 어르신이 이미 다른 방법으로 말씀하셨는데 그 소리가 뒤늦게
+ * 또 하나의 질문이 되어 들어옵니다 — 예전 무한 반복과 같은 모양입니다.
+ */
+function abortListening(){
+  if(!listening) return;
+  listening=false; MIC.stopping=true; MIC.chunks=[];
+  try{ MIC.src && MIC.src.disconnect(MIC.node); MIC.node && MIC.node.disconnect(); }catch(e){}
+  if(rec){ try{ rec.stop(); }catch(e){} }
+  paintTalk();
+}
+
+// ---- 예비책: 브라우저 내장 인식 ----
+// 클로바가 막혀 있을 때만 씁니다. 인식률은 낮지만, 아무 말도 못 알아듣는 것보다는
+// 낫습니다. 여기서도 마이크는 이음이가 말을 마친 뒤에만 열립니다.
 if(SR){ rec=new SR(); rec.lang='ko-KR'; rec.interimResults=false; rec.maxAlternatives=1;
-  // 마이크가 실제로 준비된 순간에만 "말씀하세요"를 띄웁니다. 예전에는 버튼을 누르면
-  // 곧바로 떠서, 마이크가 열리기 전에 말씀하신 앞부분을 놓쳤습니다.
-  rec.onaudiostart=()=>{ if(active){ beep(); setStatus('말씀하세요 🎙️'); } };
   rec.onresult=e=>{
-    const r=e.results[e.results.length-1][0];
+    const r=e.results[0][0];
     const t=(r.transcript||'').trim();
     // 소음 거르기. 글자 수로 자르지는 않습니다 — 한국어에서 "네", "예"는
     // 한 글자짜리 정상 대답이라, 짧다고 버리면 진짜 대답을 버리게 됩니다.
     const conf = typeof r.confidence==='number' ? r.confidence : 0;
     if(!t || (conf>0 && conf<0.3)){
-      if(active && !NATURAL) setStatus('잘 못 들었어요. 다시 한 번 눌러서 말씀해 주세요.');
+      if(active) setStatus('잘 못 들었어요. 한 번만 더 말씀해 주세요.');
       return;
     }
-    // 에코 무시 — 이음이가 말하는 중에 들린 소리가 방금 이음이가 한 말과 겹치면,
-    // 스피커 소리를 마이크가 되들은 것이므로 버립니다.
-    const speaking = draining || speechQueue.length>0;
-    if(speaking && lastSpoken && (lastSpoken.includes(t) || (t.length>=4 && lastSpoken.includes(t.slice(0,4))))) return;
-    // 끼어들기(barge-in) — 이음이가 말하는 중 어르신이 말하면 답변을 멈추고 새 질문을 듣습니다.
-    if(speaking) stopSpeech();
     onUser(t);
   };
-  rec.onerror=(ev)=>{ listening=false; paintTalk();
-    if(active && !NATURAL){ setStatus('말이 안 들려요. 아래에 입력해 주세요.'); }
-    // 자연 모드에서 마이크가 잠깐 끊겨도 곧 다시 엽니다(no-speech 등은 정상).
-    if(NATURAL && active && ev && ev.error!=='not-allowed' && ev.error!=='service-not-allowed'){
-      setTimeout(()=>{ if(NATURAL && active && !listening) startListening(); }, 400);
-    } };
-  rec.onend=()=>{ listening=false; paintTalk();
-    // 자연 대화 모드 — 마이크를 계속 열어 둡니다. 한 번 끝나도 대화 중이면 곧 다시 듣습니다.
-    if(NATURAL && active){ setTimeout(()=>{ if(NATURAL && active && !listening) startListening(); }, 200); } };
+  rec.onerror=()=>{ listening=false; paintTalk();
+    if(active){ setStatus('말이 안 들려요. 아래에 입력해 주세요.'); typerow.classList.add('show'); } };
+  rec.onend=()=>{ listening=false; paintTalk(); };
 }
-
-function startListening(){
+function startBrowserListening(){
   if(!active || listening) return;
   if(!rec){ typerow.classList.add('show'); setStatus('아래에 입력해 주세요'); return; }
-  // 마이크가 열리기까지 잠깐 걸립니다. 준비되면 onaudiostart가 신호음과 함께
-  // "말씀하세요"로 바꿔 줍니다. 그 전까지는 "잠시만요"로 기다리게 합니다.
-  try{ rec.start(); listening=true; setStatus('잠시만요…'); }
+  try{ rec.start(); listening=true; setStatus('말씀하세요 🎙️'); }
   catch(e){ listening=false; }
   paintTalk();
 }
-function stopListening(){
-  if(rec && listening){ try{ rec.stop(); }catch(e){} }
-  listening=false; paintTalk();
+
+// 마이크를 완전히 놓아 줍니다 — 통화가 끝나면 녹음 표시가 남아 있으면 안 됩니다.
+function micRelease(){
+  try{ MIC.src && MIC.node && MIC.src.disconnect(MIC.node); MIC.node && MIC.node.disconnect(); }catch(e){}
+  try{ MIC.stream && MIC.stream.getTracks().forEach(t=>t.stop()); }catch(e){}
+  try{ MIC.ctx && MIC.ctx.close(); }catch(e){}
+  MIC.stream=null; MIC.ctx=null; MIC.src=null; MIC.node=null; MIC.chunks=[];
 }
+
 // 무응답(침묵) 감지 → 통화 종료 버튼 강조 + 안내
 let idleTimer=null;
 function clearIdle(){ if(idleTimer){clearTimeout(idleTimer);idleTimer=null;} hang.classList.remove('alert'); }
 function armIdle(){ clearTimeout(idleTimer); idleTimer=setTimeout(()=>{
-  if(!active) return;
+  if(!active || listening) return;
   hang.classList.add('alert');
-  setStatus('말씀하시려면 "🎤 말씀하기"를 눌러 주세요. 아래에 입력하셔도 됩니다.', true);
+  setStatus('말씀하시려면 아래 초록 버튼을 눌러 주세요. 입력하셔도 됩니다.', true);
   typerow.classList.add('show');
-  // 12초였습니다. 이제는 어르신이 버튼을 찾아 누르셔야 하므로 조금 더 기다립니다.
-}, 20000); }
+}, 25000); }
 /**
- * 어르신 차례 — Ieumi has finished speaking and is waiting.
+ * 어르신 차례 — Ieumi has finished speaking, so the microphone opens by itself.
  *
- * This is what used to be `listen()`, which opened the microphone by itself.
- * Now it only *offers*: the buttons appear and nothing is recorded until the
- * senior presses 말씀하기. Without a microphone at all, the typing row opens
- * instead, which is also the fallback the idle timer falls back to.
+ * 이음이가 말을 다 끝낸 <뒤에> 열립니다. 재생이 끝나고 0.3초를 두는 것은, 스피커의
+ * 마지막 울림이 마이크로 들어가 그것이 다시 질문이 되는 일을 막기 위해서입니다.
  */
 function readyForUser(){
   if(!active) return;
-  // 자연 대화 모드 — 버튼을 기다리지 않고 마이크를 계속 열어 둡니다.
-  if(NATURAL && rec){
-    if(!listening) startListening();
-    actions.classList.add('show');   // 문자받기 버튼은 남기고, 말씀하기 버튼만 CSS로 숨깁니다.
-    setStatus('편하게 말씀하세요');
-    armIdle();
-    return;
-  }
-  stopListening();
   actions.classList.add('show');
-  if(rec) setStatus('아래 초록 버튼을 누르고 말씀해 주세요');
-  else { typerow.classList.add('show'); setStatus('아래에 입력해 주세요'); }
   armIdle();
+  setTimeout(()=>{ if(active && !listening && kwrap.classList.contains('hidden')) startListening(); }, 300);
 }
 
 // ---- 음성 출력 (스트리밍 파이프라인) ----
@@ -334,12 +547,6 @@ function readyForUser(){
 // sent for synthesis the moment it exists; requests overlap, playback stays in
 // order. CLOVA costs ~1.8s per call regardless of length, so only the first
 // short sentence is ever waited on.
-// 즉답 추임새 — 어르신 질문 직후 짧은 호응을 즉시 재생해 기다림을 흡수합니다.
-// 미리 만들어 둔 음성이라 지연이 없고, 이어서 확인된 답변이 자연스럽게 나옵니다.
-const FILLERS=["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"];
-let fillerIdx=0;
-function b64ToBlob(b64,type){var bin=atob(b64);var arr=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);return new Blob([arr],{type:type||"audio/mp3"});}
-function playFiller(){try{var b64=FILLERS[fillerIdx++%FILLERS.length];speechQueue.push({blob:Promise.resolve(b64ToBlob(b64)),done:function(){},epoch:speechEpoch});drainSpeech();}catch(e){}}
 let audio = new Audio();
 let speechQueue = [];        // {promise, resolve} — synthesis in flight, played in order
 let draining = false;
@@ -358,16 +565,67 @@ function ttsBlob(text){
 }
 
 // 문장 하나를 재생 대기열에 넣습니다. 합성은 지금 바로 시작합니다.
+// 자막으로 보여 줄 글도 <같은 문장>을 들고 갑니다 — 소리와 글이 한 짝입니다.
 function enqueueSpeech(text){
   const clean = stripForSpeech(text);
   if(!clean) return Promise.resolve();
-  lastSpoken = clean;   // 방금 말한 문장 — 에코(스피커→마이크 되들림) 걸러내는 데 씁니다.
   const epoch = speechEpoch;
   let done;
   const finished = new Promise(r=>{ done = r; });
-  speechQueue.push({ blob: ttsBlob(clean).catch(()=>null), done, epoch });
+  speechQueue.push({ blob: ttsBlob(clean).catch(()=>null), done, epoch, text: clean });
   drainSpeech();
   return finished;
+}
+
+/**
+ * 한 문장을 재생하면서, 그 소리에 맞춰 자막을 내보냅니다.
+ *
+ * 글자가 나오는 속도를 짐작해서 정하지 않습니다 — 지금 재생되고 있는 위치
+ * (currentTime / duration)를 그대로 씁니다. 그래서 복지관이 목소리 속도를
+ * 느리게 바꿔도(어르신용 설정), 자막이 알아서 같이 느려집니다.
+ *
+ * The reveal is not a guessed typing speed: it is the clip's own playback
+ * position. A centre that slows the voice down for its seniors gets slower
+ * subtitles for free, and the two cannot drift apart.
+ *
+ * 화면을 그리는 타이밍(requestAnimationFrame)이 아니라 <타이머>로 돕니다.
+ * 처음에는 requestAnimationFrame 을 썼는데, 브라우저가 화면을 안 그리는 상태
+ * (창이 뒤에 있거나 화면이 꺼졌을 때)에서는 한 번도 불리지 않아, 소리는 나는데
+ * 말풍선은 텅 빈 채로 있다가 문장이 끝나서야 한꺼번에 채워졌습니다. 실제로
+ * 그렇게 되는 것을 확인했습니다. 타이머는 그런 상태에서도 돕니다.
+ *
+ * Driven by a timer, not requestAnimationFrame: rAF does not fire at all while
+ * the page is not being painted — measured, zero callbacks — which left the
+ * voice playing against an empty bubble until the sentence ended. A kiosk whose
+ * browser is behind something else must still show its subtitles.
+ */
+const REVEAL_MS = 80;    // 0.08초마다 — 눈으로는 이어져 보이고, 일은 거의 없습니다
+
+function playAndReveal(blob, text){
+  return new Promise(res=>{
+    const before = spaced(subtitleDone);   // 이 문장 앞까지 이미 읽은 글 (+ 사이 한 칸)
+    const url = URL.createObjectURL(blob);
+    let timer = 0, settled = false;
+    const finish = ()=>{
+      if(settled) return; settled = true;
+      clearInterval(timer);
+      subtitleDone = before + text;       // 다 읽은 문장은 화면에 그대로 남습니다
+      subtitleShow(subtitleDone);
+      try{ URL.revokeObjectURL(url); }catch(e){}
+      res();
+    };
+    const tick = ()=>{
+      const d = audio.duration;
+      const frac = (d && isFinite(d) && d>0) ? Math.min(1, audio.currentTime/d) : 0;
+      subtitleShow(before + text.slice(0, Math.ceil(text.length*frac)));
+    };
+    audio.src = url;
+    audio.onended = finish; audio.onerror = finish;
+    const start = ()=>{ tick(); timer = setInterval(tick, REVEAL_MS); };
+    const p = audio.play();
+    if(p && p.then) p.then(start).catch(finish);
+    else start();
+  });
 }
 
 async function drainSpeech(){
@@ -377,14 +635,18 @@ async function drainSpeech(){
     const item = speechQueue.shift();
     try{
       const blob = await item.blob;
-      if(blob && item.epoch === speechEpoch){
+      if(item.epoch === speechEpoch){
         setStatus('이음이가 말하는 중…', true);
         call.classList.remove('listening');
-        await new Promise(res=>{
-          audio.src = URL.createObjectURL(blob);
-          audio.onended = res; audio.onerror = res;
-          audio.play().catch(()=>res());
-        });
+        subtitleTakeTurn();      // 새 답변의 첫 소리 — 이때 화면을 갈아 끼웁니다
+        if(blob){
+          await playAndReveal(blob, item.text);
+        }else{
+          // 소리가 안 나올 때는(합성 실패) 글만이라도 바로 보여 드립니다.
+          // 맞출 소리가 없는데 천천히 내보내면 그냥 느린 화면일 뿐입니다.
+          subtitleDone = spaced(subtitleDone) + item.text;
+          subtitleShow(subtitleDone);
+        }
       }
     }catch(e){}
     item.done();
@@ -401,7 +663,10 @@ function stopSpeech(){
 }
 
 // 한 덩어리를 말하고 끝날 때까지 기다립니다 (인사말·확인 등 단발 발화용).
-const speak = (text) => enqueueSpeech(text);
+// 자막도 이 안에서 나옵니다 — 부르는 쪽에서 따로 화면에 쓰지 않습니다.
+// 예전에는 say(m) 으로 먼저 다 써 놓고 speak(m) 으로 읽었기 때문에, 글이 늘
+// 소리보다 한 발 앞서 있었습니다.
+const speak = (text) => { subtitleNewTurn(); return enqueueSpeech(text); };
 
 // 스트리밍으로 들어오는 글을 문장 단위로 잘라 차례차례 합성에 넘깁니다.
 // 문장이 끝나야 자연스러운 억양이 나오므로, 완성된 문장만 보냅니다.
@@ -433,24 +698,23 @@ function makeSentencePump(){
 }
 
 // ---- 대화 한 턴 (스트리밍) ----
-// 답이 다 나올 때까지 기다리지 않습니다. 글자가 도착하는 대로 말풍선에 쓰고,
-// 문장이 하나 끝나면 곧바로 음성 합성을 시작합니다 (§3-6 ①②).
+// 답이 다 나올 때까지 기다리지 않습니다. 문장이 하나 끝나는 대로 음성 합성을
+// 시작하고, 자막은 그 소리에 맞춰 나옵니다 (§3-6 ①②).
 async function botTurn(){
+  subtitleNewTurn();
   setStatus('이음이가 생각하는 중…');
-  playFiller();   // 즉시 짧은 호응으로 기다림을 흡수
   const pump = makeSentencePump();
   let reply = '', meta = null, failed = '';
 
   try{
     const r = await fetch(API+'/chat',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({history, c:CTOKEN, stream:true})});
+      body:JSON.stringify({history, c:CTOKEN, stream:true, lang:LANG()})});
 
     if(!r.ok || !r.body) throw new Error('stream unavailable');
 
     const reader = r.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
-    let firstChunk = true;
 
     for(;;){
       const {done, value} = await reader.read();
@@ -464,9 +728,10 @@ async function botTurn(){
         let ev; try{ ev = JSON.parse(line); }catch(e){ continue; }
 
         if(typeof ev.t === 'string'){
-          if(firstChunk){ firstChunk = false; setStatus(''); }
           reply += ev.t;
-          say(reply);        // 말풍선은 글자가 오는 대로 자랍니다
+          // 여기서 화면에 쓰지 않습니다. 글은 그 문장을 읽는 소리와 함께 나옵니다
+          // (playAndReveal). 예전에는 이 자리에서 답을 통째로 써 버렸고, 그래서
+          // 화면은 이미 다 끝났는데 목소리는 첫 문장을 읽고 있었습니다.
           pump.push(ev.t);   // 문장이 끝나면 그 자리에서 합성 시작
         }
         if(ev.done){
@@ -479,25 +744,23 @@ async function botTurn(){
     // 스트리밍이 막힌 환경(프록시 등)에서는 예전 방식으로 한 번 더 시도합니다.
     try{
       const r = await fetch(API+'/chat',{method:'POST',headers:{'content-type':'application/json'},
-        body:JSON.stringify({history, c:CTOKEN})});
+        body:JSON.stringify({history, c:CTOKEN, lang:LANG()})});
       const d = await r.json();
       if(d.error) throw new Error(d.error);
       meta = d;
       reply = (d.parsed && d.parsed.reply) || d.raw || '';
-      say(reply);
       pump.push(reply);
     }catch(e2){
+      stopSpeech();
       say('연결에 문제가 있어요. 잠시 후 다시 해주세요.');
       setStatus('');
-      stopSpeech();
       return;
     }
   }
 
   if(failed || !reply.trim()){
-    say('죄송해요, 지금은 대답하기 어려워요.');
     if(failed) setStatus('⚠ '+String(failed).slice(0,70), true);
-    await enqueueSpeech('죄송해요, 지금은 대답하기 어려워요.');
+    await speak('죄송해요, 지금은 대답하기 어려워요.');
     if(active) readyForUser();
     return;
   }
@@ -521,7 +784,8 @@ async function botTurn(){
 async function onUser(text){
   if(!active) return;
   clearIdle();
-  if(!NATURAL) stopListening();   // 자연 모드는 마이크를 계속 열어 둡니다(끼어들기 지원)
+  abortListening();
+  quietRounds=0; emptyRounds=0;   // 어르신 말씀이 들어왔습니다 — 눈금을 되돌립니다
   actions.classList.remove('show');
   setStatus(''); typerow.classList.remove('show');
   history.push({role:'user',content:text});
@@ -537,17 +801,20 @@ async function onUser(text){
       let m;
       if(other){
         const keep=pickedJob; pickedJob=other;
-        const content=await requestSms('send').catch(()=>'');
+        const { content, sent } = await requestSms('send').catch(()=>({content:'',sent:false}));
         pickedJob=keep;
-        smsSent=true; showSentCard('✅ 다른 일자리도 보냈어요', content); setStatus('');
-        m=(nm?nm+' 어르신, ':'')+'어르신께 맞을 만한 다른 일자리도 문자로 보내드렸어요. 도움이 되시길 바라요. 안녕히 가세요!';
+        smsSent=true;
+        showSentCard(sent?'✅ 다른 일자리도 보냈어요':'📄 다른 일자리도 보여드려요', content); setStatus('');
+        m=sent
+          ? (nm?nm+' 어르신, ':'')+'어르신께 맞을 만한 다른 일자리도 문자로 보내드렸어요. 도움이 되시길 바라요. 안녕히 가세요!'
+          : (nm?nm+' 어르신, ':'')+'어르신께 맞을 만한 다른 일자리도 화면에 띄워드렸어요. 도움이 되시길 바라요. 안녕히 가세요!';
       }else{
         m=(nm?nm+' 어르신, ':'')+'지금은 알려드릴 다른 자리가 없어요. 담당 선생님께 전해드릴게요. 안녕히 가세요!';
       }
-      history.push({role:'assistant',content:m}); say(m); setStatus(''); await speak(m);
+      history.push({role:'assistant',content:m}); setStatus(''); await speak(m);
     }else{
       const m='네, 도움이 되셨길 바라요. 안녕히 가세요!';
-      history.push({role:'assistant',content:m}); say(m); await speak(m);
+      history.push({role:'assistant',content:m}); await speak(m);
     }
     return;
   }
@@ -564,7 +831,7 @@ $('#typein').addEventListener('keydown',e=>{ if(e.key==='Enter') $('#typebtn').c
 let phone='';
 const fmtp=p=>{let d=p;if(d.length>3&&d.length<=7)d=d.slice(0,3)+'-'+d.slice(3);else if(d.length>7)d=d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7,11);return d||'​';};
 function renderNum(){ num.textContent=fmtp(phone); }
-function openKeypad(){ phone=''; renderNum(); kpEntry.classList.remove('off'); kpConfirm.classList.add('off'); kpSent.classList.add('off'); kwrap.classList.remove('hidden'); actions.classList.remove('show'); stopListening(); }
+function openKeypad(){ phone=''; renderNum(); kpEntry.classList.remove('off'); kpConfirm.classList.add('off'); kpSent.classList.add('off'); kwrap.classList.remove('hidden'); actions.classList.remove('show'); abortListening(); }
 async function openConfirm(){
   cnum.textContent=fmtp(phone);
   await lookupMember(phone);          // 복지관 명단에 이 번호가 있는지 서버에 확인
@@ -617,16 +884,27 @@ async function requestSms(kind){
       summary: lastSummary || undefined,
     })});
   const d = await r.json().catch(()=>({}));
-  return d.content || '';
+  // sent 를 함께 돌려줍니다 — 보냈는지 아닌지를 부르는 쪽이 알아야 합니다.
+  // 예전에는 content 만 돌려주어서, 문자 키가 없어도 "문자를 보내드렸어요" 라고
+  // 말했습니다. 어르신은 오지 않는 문자를 기다리시게 됩니다.
+  // Returning only the body made every attempt look successful: with no SMS key
+  // Ieumi still said it had sent one, and a senior waits for a text that will
+  // never arrive.
+  return { content: d.content || '', sent: !!d.sent };
 }
 
 async function doSend(){
   const nm=memberName();
   // 실발송 시도: .env에 SMS 키가 있으면 실제 문자 발송, 없으면 화면 표시만 (시연)
-  const content = await requestSms('send').catch(()=>'');
-  smsSent=true; showSentCard('✅ 문자를 보냈어요', content); setStatus('');
-  const done=(nm?nm+' 어르신, ':'')+'말씀하신 번호로 문자를 보내드렸어요.';
-  history.push({role:'assistant',content:done}); say(done); offerSms=false;
+  const { content, sent } = await requestSms('send').catch(()=>({content:'',sent:false}));
+  smsSent=true;
+  showSentCard(sent?'✅ 문자를 보냈어요':'📄 문자 내용을 보여드려요', content); setStatus('');
+  // 실제로 보내지 못했으면 보냈다고 말하지 않습니다. 화면에는 그대로 보여드립니다 —
+  // 내용을 읽으실 수는 있어야 하니까요.
+  const done=sent
+    ? (nm?nm+' 어르신, ':'')+'말씀하신 번호로 문자를 보내드렸어요.'
+    : (nm?nm+' 어르신, ':'')+'지금은 문자를 보내드릴 수 없어서, 화면에 내용을 띄워드렸어요. 담당 선생님께도 전해드릴게요.';
+  history.push({role:'assistant',content:done}); offerSms=false;
   await speak(done);
   if(!active) return;
 
@@ -636,7 +914,7 @@ async function doSend(){
   const hasOther = JOBS.some(j=>!pickedJob||j.id!==pickedJob.id);
   if(!hasOther){ readyForUser(); return; }
   const fu='그리고 어르신이 찾으시는 일자리와 비슷하거나, 알려드릴 만한 다른 일자리가 또 있으면, 그것도 문자로 보내드릴까요?';
-  awaitingFollowup=true; history.push({role:'assistant',content:fu}); say(fu); await speak(fu); readyForUser();
+  awaitingFollowup=true; history.push({role:'assistant',content:fu}); await speak(fu); readyForUser();
 }
 kwrap.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)return; const a=b.dataset.act;
   if(a==='cyes'){ doSend(); return; }
@@ -649,25 +927,68 @@ kwrap.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)re
 talkBtn.addEventListener('click',()=>{ if(!active) return; listening ? stopListening() : startListening(); });
 smsBtn.addEventListener('click',()=>{ if(active) openKeypad(); });
 
+// 인사말은 복지관이 써넣은 자료입니다 — 화면 언어에 맞는 쪽을 씁니다.
+// 영어 인사가 비어 있으면 기본 문장을 쓰되, 이음이 이름은 복지관 것을 그대로.
+//
+// 한 곳에서만 만듭니다. 대기 화면에서 미리 합성해 두는 글자와 통화를 시작할 때
+// 말하는 글자가 <한 글자라도> 다르면 캐시가 어긋나서, 미리 만들어 둔 보람이
+// 없어집니다.
+//
+// The greeting is the centre's own content, so it has a column per language
+// rather than a dictionary entry. With no English greeting stored, fall back to
+// a neutral one that still uses this centre's name for Ieumi. Built in one place
+// only: the text pre-synthesised on the idle screen and the text spoken at
+// pick-up must match to the character, or the cached clip is never the one
+// asked for.
+function greetingText(){
+  const inEn = LANG()==='en';
+  return (inEn && CTX.settings && CTX.settings.greeting_en)
+    || (!inEn && CTX.settings && CTX.settings.greeting)
+    || (inEn ? 'What can I help you with?'
+             : '무엇을 도와드릴까요?');   /* 탐 팀: 인사말 짧게(대기화면에 소개 상시 예정) */
+}
+
+// 대기 화면에서 인사말을 미리 합성해 둡니다 (§3-6).
+// 클로바는 한 번에 1.8초쯤 걸립니다. 그 1.8초는 어르신이 통화 버튼을 누르고
+// 아무 소리도 없이 기다리시는 시간이었습니다. 키오스크는 어차피 서 있으니,
+// 그동안 미리 만들어 두면 버튼을 누르는 순간 바로 인사말이 나옵니다.
+//
+// CLOVA takes ~1.8s per call, and that was 1.8s of silence after the senior
+// pressed the call button. The kiosk is standing idle anyway, so it has the clip
+// made in advance and the greeting starts the moment the button is pressed.
+function prewarmGreeting(){
+  try{
+    const t = stripForSpeech(greetingText());
+    if(!t) return;
+    fetch(API+'/tts',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({text:t, c:CTOKEN})}).catch(()=>{});
+  }catch(e){}
+}
+
 // ---- 시작/종료 ----
 async function start(){
   active=true; history=[]; offerSms=false; pickedJob=null; awaitingFollowup=false;
   lastSummary=''; lastCategory=''; smsSent=false; memberInfo=null; phone='';
-  lastServiceCode=''; lastServiceName='';
+  lastServiceCode=''; lastServiceName=''; quietRounds=0; emptyRounds=0; sttMode='clova';
   call.classList.remove('invite'); hang.classList.add('show'); actions.classList.remove('show');
-  // 복지관 설정(이름·인사말·목소리)을 먼저 받아옵니다.
-  const greet=(CTX.settings&&CTX.settings.greeting) || '무엇을 도와드릴까요?';
-  history.push({role:'assistant',content:greet}); say(greet);
+  // 서버를 미리 깨웁니다 (§3-6). 기다리지 않습니다 — 인사말을 하는 동안 뒤에서
+  // 복지관 설정·날씨·일자리·프롬프트 캐시가 한꺼번에 데워집니다. 어르신이 첫
+  // 질문을 말씀하실 때쯤이면 이미 준비가 끝나 있습니다. 실패해도 그냥 넘어갑니다:
+  // 예열은 빨라지자고 하는 일이지, 통화를 막을 이유가 되어서는 안 됩니다.
+  //
+  // Fired and forgotten while the greeting plays. By the time the senior has
+  // finished asking, the caches the answer needs are already warm. A failure here
+  // is ignored on purpose — warming exists to save time, never to cost a call.
+  try{ fetch(API+'/warm',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({c:CTOKEN, lang:LANG()})}).catch(()=>{}); }catch(e){}
+  const greet=greetingText();
+  history.push({role:'assistant',content:greet});
   await speak(greet); readyForUser();
 }
-function end(){ active=false; clearIdle(); if(rec)try{rec.stop()}catch(e){} stopSpeech();
+function end(){ active=false; clearIdle(); abortListening(); micRelease(); stopSpeech(); subtitleReset();
   fileRequest();                          // 통화 내용을 담당자 대시보드로 넘깁니다
   call.classList.add('invite'); hang.classList.remove('show'); actions.classList.remove('show'); typerow.classList.remove('show'); kwrap.classList.add('hidden');
-  setStatus(''); say(waitingScreen()); }
-// 대기화면 — 이음이 소개를 상시 띄웁니다 (인사말에서 뺀 소개를 여기서 늘 보여줍니다).
-function waitingScreen(){
-  return '안녕하세요, 저는 말벗 '+ieumiName()+'예요.<br/>궁금한 걸 편하게 물어보세요.<br/>수화기를 들고 아래 초록 버튼을 눌러주세요.';
-}
+  setStatus(''); say('수화기를 들고<br/>아래 초록 버튼을<br/>눌러주세요.'); }
 call.addEventListener('click',()=>{ if(!active) start(); });
 $('#hangBtn').onclick=end;
 // 통화 중에 창을 닫아도 접수 기록은 남깁니다.
@@ -676,12 +997,26 @@ window.addEventListener('pagehide',()=>{ if(active) fileRequest(); });
 // 복지관 설정을 미리 받아 둡니다 (이름·인사말·목소리·명단대조 여부).
 loadContext().then(()=>{
   if(CTX.center) document.title=ieumiName()+' · '+CTX.center.name;
-  // 대화 모드 확정 — 기본은 자연 대화(자동 듣기+끼어들기). 대시보드에서 'button'으로
-  // 바꾸면 예전 버튼 방식으로 돌아갑니다(시끄러운 환경 대비).
-  NATURAL = !(CTX.settings && CTX.settings.conversation_mode==='button');
-  document.body.classList.toggle('natural', NATURAL);
-  if(!active) say(waitingScreen());   // 이름을 받아온 뒤 대기화면 소개를 갱신
+  prewarmGreeting();          // 대기 화면에 서 있는 동안 인사말을 미리 만들어 둡니다
 });
 </script>
+
+<script>
+// 화면 언어를 서버에 알려 줍니다 — i18n.js 가 아직 안 떴으면 주소·저장값을 봅니다.
+// Tell the server which language the screen is in. i18n.js may not have loaded
+// yet when the first turn fires, so fall back to the URL and stored choice.
+function LANG(){
+  try{ if(window.I18N && window.I18N.lang) return window.I18N.lang; }catch(e){}
+  try{
+    const q=new URLSearchParams(location.search).get("lang");
+    if(q==="en"||q==="ko") return q;
+    return localStorage.getItem("ieumi_lang")==="en"?"en":"ko";
+  }catch(e){ return "ko"; }
+}
+</script>
+<!-- 언어 전환 (한국어 ⇄ English). 사전에 없는 문장은 한글로 남습니다.
+     Language switch. Load with ?lang=en, or ?i18n=debug to list gaps. -->
+<script src="i18n-en.js"></script>
+<script src="i18n.js"></script>
 </body>
 </html>
