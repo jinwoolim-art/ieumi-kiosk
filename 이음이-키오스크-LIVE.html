@@ -397,7 +397,7 @@ async function startListening(){
   const ok=await micReady();
   if(!ok){
     // 마이크가 없거나 권한이 거부됨 — 브라우저 인식도 못 씁니다. 타이핑으로.
-    typerow.classList.add('show'); setStatus('아래에 입력해 주세요'); return;
+    typerow.classList.add('show'); setStatus('말씀하기 버튼을 눌러 주세요'); return;
   }
   MIC.chunks=[]; MIC.heardSpeech=false; MIC.floor=0; MIC.frames=0; MIC.silence=0; MIC.speechMs=0;
   MIC.started=Date.now(); MIC.stopping=false;
@@ -494,12 +494,12 @@ if(SR){ rec=new SR(); rec.lang='ko-KR'; rec.interimResults=false; rec.maxAlterna
     onUser(t);
   };
   rec.onerror=()=>{ listening=false; paintTalk();
-    if(active){ setStatus('말이 안 들려요. 아래에 입력해 주세요.'); typerow.classList.add('show'); } };
+    if(active){ setStatus('말이 안 들려요. 말씀하기 버튼을 눌러 주세요.'); typerow.classList.add('show'); } };
   rec.onend=()=>{ listening=false; paintTalk(); };
 }
 function startBrowserListening(){
   if(!active || listening) return;
-  if(!rec){ typerow.classList.add('show'); setStatus('아래에 입력해 주세요'); return; }
+  if(!rec){ typerow.classList.add('show'); setStatus('말씀하기 버튼을 눌러 주세요'); return; }
   try{ rec.start(); listening=true; setStatus('말씀하세요 🎙️'); }
   catch(e){ listening=false; }
   paintTalk();
