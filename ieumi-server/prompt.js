@@ -174,6 +174,7 @@ const buildSystem = (p = {}) => {
   · 금액, 지원금 액수, 급여, 수수료
   · 날짜, 신청 기간, 운영 시간, 휴무일
   · "어르신이 대상인지" 같은 자격 판단
+  · <오늘·내일의 날씨, 기온, 비나 눈이 오는지> — 지금 이 순간의 사실입니다. 머릿속에 떠오르는 날씨는 배운 시절의 날씨이지 오늘 날씨가 아닙니다. 어르신은 그 말을 듣고 우산 없이 나가십니다. 단, 아래 [지금 이 동네 실시간 날씨] 블록이 있으면 그것은 방금 받은 값이니 그 값으로 답하세요. 블록이 없으면 "오늘 날씨까지는 제가 확인이 안 돼서요, 창밖을 한번 보시거나 기상청에 여쭤보시는 게 정확해요" 라고 말씀드립니다. 계절에 맞는 일반적인 당부(환절기 감기 조심 같은 것)는 괜찮습니다
   이런 것을 물으시면 "그건 제가 정확히 알 수 없어서, 담당 선생님께 여쭤보고 알려드릴게요"라고 답합니다.
 - 건강·몸에 관한 이야기는 특히 조심합니다. 병을 진단하거나 약을 바꾸라고 권하지 마세요. 일반적인 이야기만 하고 "정확한 건 의사 선생님이나 보건소에 여쭤보세요"로 맺습니다.
 - 일반 상식으로 답한 뒤에는 한 번 더 확인을 권합니다. 확신하는 말투로 단정하지 마세요.`;
@@ -181,6 +182,8 @@ const buildSystem = (p = {}) => {
   return `${en ? ENGLISH_MODE + '\n' : ''}당신은 '${name}', ${center}의 ${tone} 말하는 AI 말벗 도우미입니다.${servicesText(services, en)}${factsSection(services, en)}
 규칙:
 - 어르신께 항상 존댓말로, 짧고 쉽고 ${tone}. 한 번에 1~2문장.
+- 첫 문장은 짧게 시작합니다(호응이나 확인 한 마디). 자세한 내용은 그다음 문장으로 이어 말합니다.
+- 특정 기관·프로그램의 자세한 내용처럼 <바로 답하기 어려운 질문>이면, 먼저 "혹시 ○○ 말씀이신 거죠? 정확히 알려드리려고 잠깐 확인할게요" 처럼 질문을 짧게 되짚고 확인하는 한 문장을 말한 뒤, 이어서 정확한 내용을 답합니다. 되물은 뒤 어르신 대답을 기다리지 말고 바로 이어서 답하세요. 간단한 인사·일상 질문에는 되묻지 말고 바로 답합니다.
 - 어려운 단어·영어·긴 설명 금지. 천천히 또박또박한 느낌.
 - 어르신이 일자리를 원하면 목록의 자리를 하나씩 쉽게 소개합니다. 한 번에 한두 개만, 하는 일과 지역 위주로 말하고 더 들어보실지 여쭙니다. 재촉하지 말고 편하게 고르시도록 돕습니다.
 - 절대 지어내지 마세요. 목록에 있는 항목만 말합니다. 어르신이 근무시간·자세한 조건 등 목록에 없는 것을 물으면, 모른다고 하지 말고 "그건 문자로 자세히 정리해서 보내드릴게요" 또는 "정확한 건 문자에 있는 담당 기관에 물어보시면 됩니다"라고 안내합니다.
@@ -366,6 +369,17 @@ function jobsSection({ jobs = [], scope = 'none', region = '', centerRegion = ''
  * The concatenation is the same either way, so `cache: false` is a true
  * fallback rather than a different prompt.
  */
+// 실시간 날씨 블록 — 몇 분마다 바뀝므로 캐시되는 고정 블록이 아니라 매 대화의
+// perTurn 쪽에 붙입니다. 없으면(수집 실패·미지원 지역) 조용히 빠지고, 위 규칙의
+// 대비 문구가 "창밖을 보시거나 기상청에"로 받아 줍니다.
+//
+// Live weather changes by the minute, so it rides in the per-turn block rather
+// than the cached prefix. When it is absent — fetch failed, region unsupported —
+// it drops out silently and the prompt's fallback wording covers it.
+const weatherSection = (weather) => weather
+  ? `\n\n[지금 이 동네 실시간 날씨] — 방금 기상청에서 받은 값입니다\n${weather}\n어르신이 날씨를 물으시면 이 값으로 짧고 자연스럽게 답하세요. 예: "지금 서초는 맑고 24도예요."`
+  : '';
+
 function systemBlocks(persona, jobsInfo, { cache = true, detail = '' } = {}) {
   const fixed = buildSystem(persona);      // 복지관마다 고정 — stable per centre
   // 질문마다 달라짐 — new every turn. 뽑아 온 조각(retrieval.js)도 여기 들어갑니다:
@@ -373,7 +387,8 @@ function systemBlocks(persona, jobsInfo, { cache = true, detail = '' } = {}) {
   // Retrieved detail belongs here for the same reason the postings do: it changes
   // with every question, and putting it in the cached prefix would break the
   // cache on every turn.
-  const perTurn = jobsSection(jobsInfo) + (detail || '');
+  const perTurn = jobsSection(jobsInfo) + (detail || '')
+    + weatherSection(persona && persona.weather);
   return cache
     ? [{ type: 'text', text: fixed, cache_control: { type: 'ephemeral' } },
        { type: 'text', text: perTurn }]

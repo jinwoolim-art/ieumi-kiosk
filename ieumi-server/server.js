@@ -12,6 +12,7 @@ const auth = require('./auth');
 const api = require('./api');
 const kioskContext = require('./kiosk-context');
 const retrieval = require('./retrieval');
+const weather = require('./weather');
 const jobs = require('./jobs');
 
 const AKEY = env.ANTHROPIC_API_KEY;
@@ -384,6 +385,15 @@ const server = http.createServer(async (req, res) => {
       // property of who is standing in front of the screen right now.
       const persona = { ...(await personaFor(c || u.searchParams.get('c'))),
                         lang: lang === 'en' ? 'en' : 'ko' };
+      // 캐시된 persona 를 복제한 위에 이 대화에만 쓸 실시간 날씨를 얹습니다.
+      // weather.forRegion 자체가 5분 캐시라 매 턴 불러도 가볍고, 실패하면 null 이라
+      // 날씨 블록이 조용히 빠지고 프롬프트의 대비 문구가 대신 받아 줍니다.
+      // 질문에 맞는 서비스 상세를 고르는 일은 retrieval.js 가 맡습니다 (아래 systemBlocks).
+      //
+      // The persona is cloned, then this turn's live weather is laid on top.
+      // forRegion caches for five minutes, so calling it every turn is cheap, and a
+      // failure yields null — the weather block simply drops out of the prompt.
+      persona.weather = await weather.forRegion(persona.region);
       const chosen = model || persona.chat_model;
 
       // 일자리는 서버가 이 복지관 지역으로 직접 찾습니다 (§6-P2).

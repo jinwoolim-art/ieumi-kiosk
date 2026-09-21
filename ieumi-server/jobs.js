@@ -247,8 +247,11 @@ async function sync({ log = () => {} } = {}) {
       [list.length, open.length, detailed]);
 
     // A sync is the only thing that changes which districts have postings, so it
-    // is the only thing that needs to drop the region vocabulary.
+    // is the only thing that needs to drop the region vocabulary — and, for the
+    // same reason, the cached per-centre lists: a posting stored just now must
+    // not wait five minutes to be offered.
     forgetVocabulary();
+    forgetCenterJobs();
 
     return { scanned: list.length, stored: open.length, detailed, pruned: pruned.rowCount };
   } catch (e) {
@@ -294,20 +297,42 @@ const pickJobs = (where, params, limit = 6) => db.all(
     ORDER BY has_detail DESC, to_date DESC NULLS LAST
     LIMIT ${Number(limit)}`, params);
 
+// 복지관 지역 일자리는 매 대화 턴마다 조회되는데, 야간 sync 전에는 값이 바뀌지
+// 않습니다. 그래서 일자리와 무관한 질문(날씨·병원 등)에도 매번 DB를 왕복하던 것을
+// 5분 캐시로 줄입니다 (§3-6 지연 절감). 날씨(weather.forRegion)와 같은 방식입니다.
+const CENTER_JOBS_TTL_MS = Number(process.env.JOBS_CENTER_TTL_MS || 5 * 60_000);
+const centerJobsCache = new Map();   // "region|limit|date" -> { at, value }
+
+// 마감 여부는 pickJobs 안에서 current_date 로 판정되므로, 캐시된 답은 <그것을 물은
+// 날짜의 답>입니다. 자정을 넘기면 어제 열려 있던 자리가 그대로 남아 버립니다.
+// 그래서 날짜를 키에 넣습니다 — 날이 바뀌면 저절로 새로 조회합니다.
+//
+// Openness is decided inside pickJobs by `current_date`, so a cached answer is
+// only the answer for the day it was asked. Keying by date means a posting that
+// closed at midnight cannot be read out the next morning.
+const todayKey = () => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
+const forgetCenterJobs = () => centerJobsCache.clear();
+
 async function forCenterRegion(region, limit = 6) {
+  const ckey = String(region || '') + '|' + limit + '|' + todayKey();
+  const hit = centerJobsCache.get(ckey);
+  if (hit && Date.now() - hit.at < CENTER_JOBS_TTL_MS) return hit.value;
+
   const parts = String(region || '').trim().split(/\s+/);
   const sido = normaliseSido(parts[0]);
   const sigungu = parts.slice(1).join(' ');
 
+  let value = { jobs: [], scope: 'none', region: region || '' };
   if (sido && sigungu) {
     const local = await pickJobs('sido = $1 AND sigungu = $2', [sido, sigungu], limit);
-    if (local.length) return { jobs: local, scope: 'sigungu', region: `${sido} ${sigungu}` };
+    if (local.length) value = { jobs: local, scope: 'sigungu', region: `${sido} ${sigungu}` };
   }
-  if (sido) {
+  if (value.scope === 'none' && sido) {
     const wide = await pickJobs('sido = $1', [sido], limit);
-    if (wide.length) return { jobs: wide, scope: 'sido', region: sido };
+    if (wide.length) value = { jobs: wide, scope: 'sido', region: sido };
   }
-  return { jobs: [], scope: 'none', region: region || '' };
+  centerJobsCache.set(ckey, { at: Date.now(), value });
+  return value;
 }
 
 // ============================================================ 어르신이 말한 지역

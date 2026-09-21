@@ -14,6 +14,15 @@ const path = require('path');
 const assert = require('assert');
 const { PGlite } = require('@electric-sql/pglite');
 
+// 일자리 목록의 5분 캐시는 끄고 돌립니다. 테스트는 SQL 로 직접 줄을 넣고 바로
+// 조회하므로, 캐시가 켜져 있으면 방금 넣은 자리를 못 보고 앞 테스트의 답을
+// 되돌려 줍니다 — 마감 판정을 확인하려는 시험이 캐시를 확인하게 됩니다.
+//
+// The per-centre jobs cache is turned off here: these tests insert rows with SQL
+// and read them back at once, so a live cache would answer with the previous
+// test's result and the expiry check would never reach the database.
+process.env.JOBS_CENTER_TTL_MS = '0';
+
 // ---------------------------------------------------------------- db shim
 // db/index.js talks to `pg`. Swap in a PGlite-backed module with the same shape
 // *before* auth.js and api.js are loaded, so they use this instead.
