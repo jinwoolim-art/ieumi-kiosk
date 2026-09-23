@@ -38,6 +38,10 @@ const env = require('../env.js');
   hit.forEach(r =>
     console.log(`  ${String(r.chunks).padStart(3)}chunk ${String(r.chars).padStart(6)}자  [${r.code}] ${r.sub}\n       link: ${r.link||'(없음)'}`));
 
+  console.log(`\n--- 전체 ${rows.length}개 서비스 목록 (파크골프/IT페스티벌이 여기 있나 확인) ---`);
+  [...rows].sort((a,b)=>String(a.code).localeCompare(String(b.code))).forEach(r =>
+    console.log(`  [${r.code}] ${(r.sub||'').padEnd(24)} ${String(r.chunks).padStart(3)}chunk  ${r.link||''}`));
+
   console.log(`\n============================================================\n`);
   process.exit(0);
 })().catch(e => { console.error('\n  오류:', e.message, '\n'); process.exit(1); });
