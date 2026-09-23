@@ -6,3 +6,6 @@ ieumi-server/.env
 .DS_Store
 node_modules/
 *.log
+
+# unattended run logs
+ieumi-server/logs/
