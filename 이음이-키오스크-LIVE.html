@@ -313,7 +313,7 @@ const SPOKE_ENOUGH_MS=1200;  // 이만큼 말씀하셨으면 한 생각을 마�
 const SILENCE_MS=900;        // 그때는 이만큼만 조용하면 보냅니다
 const SILENCE_HESITANT_MS=1500;  // 아직 짧게만 말씀하셨으면 조금 더 기다립니다
 const NO_SPEECH_MS=12000;   // 한 마디도 없으면 그냥 닫습니다 (보내지 않습니다)
-const MAX_MS=20000;         // 클로바 단문 인식 한도 안에서 끊습니다
+const MAX_MS=13000;         // 탐 팀: 버튼이 없으니 자동 종료를 앞당김(클로바 단문 한도 내)
 // 헛도는 것을 막는 두 개의 눈금. 어르신이 실제로 말씀하신 것이 한 번 들어오면
 // 둘 다 0 으로 돌아갑니다 (onUser).
 let quietRounds=0;          // 아무 소리도 없이 닫힌 횟수
@@ -378,7 +378,7 @@ async function micReady(){
       // 경로당은 조용한 사무실이 아닙니다 — 고정된 기준값을 쓰면 시끄러운 날엔
       // 늘 말하는 중으로, 조용한 날엔 늘 침묵으로 잘못 읽습니다.
       if(MIC.frames<=6){ MIC.floor=Math.max(MIC.floor,rms); return; }
-      const gate=Math.max(MIC.floor*2.2, 0.012);
+      const gate=Math.max(MIC.floor*2.8, 0.02);   // 탐 팀: 소음·에코를 말소리로 오인해 안 끊기는 것 완화(민감도 낮춤)
       if(rms>gate){ MIC.heardSpeech=true; MIC.silence=0; MIC.speechMs+=frameMs; }
       else if(MIC.heardSpeech){ MIC.silence+=frameMs; }
       const elapsed=Date.now()-MIC.started;
