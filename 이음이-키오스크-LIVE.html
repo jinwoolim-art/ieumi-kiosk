@@ -64,7 +64,7 @@
   .off{display:none}
   /* 통화 중 버튼 줄 — status 와 자리가 겹치지 않도록 아래에 따로 둡니다. */
   .actions{position:absolute;bottom:5%;left:6%;width:52%;z-index:10;display:none;flex-direction:column;gap:7px}
-  .actions.show{display:flex}
+  .actions.show{display:none!important}   /* 탐 팀: 다시말씀하기·문자받기 버튼 전부 숨김(초기 버전 UI, 음성 전용) */
   .actions button{font-family:inherit;border:none;border-radius:999px;font-weight:800;cursor:pointer;
     padding:13px 20px;font-size:16px;box-shadow:0 10px 22px -8px rgba(0,0,0,.35)}
   #talkBtn{display:none!important}   /* 탐 팀: 말씀하기 버튼 숨김 — 자동 듣기(버튼 없이 대화) */
@@ -422,8 +422,7 @@ async function finishListening(send){
     // 12초는 짧습니다. 그래도 아무 말씀이 없으면 화면으로 여쭙니다.
     if(!active) return;
     if(quietRounds<1){ quietRounds++; return startListening(); }
-    setStatus('말씀하시려면 아래 초록 버튼을 눌러 주세요. 입력하셔도 됩니다.');
-    typerow.classList.add('show');
+    setStatus('');   /* 탐 팀: 안내 문구 없이 조용히 대기 */
     return;
   }
   setStatus('알아듣는 중…');
@@ -518,9 +517,7 @@ let idleTimer=null;
 function clearIdle(){ if(idleTimer){clearTimeout(idleTimer);idleTimer=null;} hang.classList.remove('alert'); }
 function armIdle(){ clearTimeout(idleTimer); idleTimer=setTimeout(()=>{
   if(!active || listening) return;
-  hang.classList.add('alert');
-  setStatus('말씀하시려면 아래 초록 버튼을 눌러 주세요. 입력하셔도 됩니다.', true);
-  typerow.classList.add('show');
+  hang.classList.add('alert');   /* 탐 팀: 무응답 시 안내 문구 없이 종료 버튼만 살짝 강조 */
 }, 25000); }
 /**
  * 어르신 차례 — Ieumi has finished speaking, so the microphone opens by itself.
@@ -636,7 +633,7 @@ async function drainSpeech(){
     try{
       const blob = await item.blob;
       if(item.epoch === speechEpoch){
-        setStatus('이음이가 말하는 중…', true);
+        setStatus('이음이가 답변하는 중…', true);
         call.classList.remove('listening');
         subtitleTakeTurn();      // 새 답변의 첫 소리 — 이때 화면을 갈아 끼웁니다
         if(blob){
@@ -791,7 +788,7 @@ async function botTurn(){
   if(meta && meta.job) pickedJob = meta.job;
 
   await pump.flush();          // 마지막 문장까지 재생이 끝나기를 기다립니다
-  if(offerSms){ setStatus('문자를 원하시면 아래 "문자 받기"를 눌러 주세요'); }
+  if(offerSms){ setStatus('문자로 받아보시려면 "문자 보내줘"라고 말씀해 주세요'); }
   if(!active) return;
   readyForUser();
 }
