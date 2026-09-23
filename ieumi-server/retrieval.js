@@ -143,7 +143,8 @@ async function search(serviceIds, question, { limit = CANDIDATES } = {}) {
     `SELECT c.url, c.title, c.kind, c.heading, c.body, c.chars, c.service_id,
             s.sub, s.org,
             to_char(ss.fetched_at, 'YYYY-MM-DD') AS at,
-            (SELECT count(*) FROM unnest($2::text[]) q WHERE c.heading ILIKE '%' || q || '%') * 3
+            (SELECT count(*) FROM unnest($2::text[]) q WHERE s.sub     ILIKE '%' || q || '%') * 3
+          + (SELECT count(*) FROM unnest($2::text[]) q WHERE c.heading ILIKE '%' || q || '%') * 3
           + (SELECT count(*) FROM unnest($2::text[]) q WHERE c.body    ILIKE '%' || q || '%')
           + CASE WHEN $4 AND c.body ~ '[0-9]{1,2}:[0-9]{2}' THEN 4 ELSE 0 END
           + CASE WHEN $5 AND c.body ~ '[0-9][0-9,]*\\s*원'   THEN 4 ELSE 0 END
