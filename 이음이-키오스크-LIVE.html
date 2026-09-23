@@ -67,7 +67,7 @@
   .actions.show{display:flex}
   .actions button{font-family:inherit;border:none;border-radius:999px;font-weight:800;cursor:pointer;
     padding:13px 20px;font-size:16px;box-shadow:0 10px 22px -8px rgba(0,0,0,.35)}
-  #talkBtn{background:#15704f;color:#fff;font-size:19px;padding:15px 20px}
+  #talkBtn{display:none!important}   /* 탐 팀: 말씀하기 버튼 숨김 — 자동 듣기(버튼 없이 대화) */
   #talkBtn.on{background:#b91c1c;animation:talkpulse 1.2s infinite}
   @keyframes talkpulse{0%,100%{box-shadow:0 0 0 0 rgba(185,28,28,.5)}50%{box-shadow:0 0 0 12px rgba(185,28,28,0)}}
   #smsBtn{background:#e2e8f0;color:#15704f}
@@ -84,7 +84,7 @@
 <body>
 <div class="frame">
   <div class="char"><img src="assets/prototype/이음이프린트티.png" alt="이음이"/></div>
-  <div class="bubble" id="bubble">수화기를 들고<br/>아래 초록 버튼을<br/>눌러주세요.</div>
+  <div class="bubble" id="bubble">저는 이음이예요 😊<br/>날씨·일자리·복지 무엇이든<br/>편하게 물어보세요.<br/>수화기를 들고 초록 버튼을 눌러 주세요.</div>
   <div class="status" id="status"></div>
 
   <button class="call invite" id="call"><img src="assets/prototype/전화아이콘.png" alt="통화"/></button>
@@ -697,12 +697,26 @@ function makeSentencePump(){
   };
 }
 
+// 즉답 추임새 — 답이 만들어지기까지의 침묵을 메웁니다 (탐 팀).
+// 어르신 질문의 갈래에 맞춰 "네, 날씨 확인해 볼게요"처럼 짧게 먼저 대답합니다.
+// 이 소리가 재생되는 동안 뒤에서 진짜 답이 준비됩니다 — enqueueSpeech 큐에 먼저
+// 들어가므로 자연히 본 답변보다 앞서 재생됩니다.
+function fillerText(){
+  const q = history.length ? String(history[history.length-1].content || '') : '';
+  if(/날씨|더워|더운|추워|추운|기온|온도|비가|눈이|우산/.test(q)) return '네, 날씨 확인해 볼게요.';
+  if(/일자리|일거리|채용|구인|일\s?있|알바|근로/.test(q)) return '네, 일자리 한번 찾아볼게요.';
+  if(/병원|약국|진료|아파|아프|치료|의원|보건소/.test(q)) return '네, 알아볼게요.';
+  if(/복지|지원|급여|수급|보조금|얼마|비용|신청/.test(q)) return '네, 확인해 볼게요.';
+  return '네, 잠시만요.';
+}
+
 // ---- 대화 한 턴 (스트리밍) ----
 // 답이 다 나올 때까지 기다리지 않습니다. 문장이 하나 끝나는 대로 음성 합성을
 // 시작하고, 자막은 그 소리에 맞춰 나옵니다 (§3-6 ①②).
 async function botTurn(){
   subtitleNewTurn();
   setStatus('이음이가 생각하는 중…');
+  enqueueSpeech(fillerText());   // 탐 팀: 즉답 추임새 — 대기 침묵을 먼저 메웁니다
   const pump = makeSentencePump();
   let reply = '', meta = null, failed = '';
 
@@ -988,7 +1002,7 @@ async function start(){
 function end(){ active=false; clearIdle(); abortListening(); micRelease(); stopSpeech(); subtitleReset();
   fileRequest();                          // 통화 내용을 담당자 대시보드로 넘깁니다
   call.classList.add('invite'); hang.classList.remove('show'); actions.classList.remove('show'); typerow.classList.remove('show'); kwrap.classList.add('hidden');
-  setStatus(''); say('수화기를 들고<br/>아래 초록 버튼을<br/>눌러주세요.'); }
+  setStatus(''); say('저는 이음이예요 😊<br/>날씨·일자리·복지 무엇이든<br/>편하게 물어보세요.<br/>수화기를 들고 초록 버튼을 눌러 주세요.'); }
 call.addEventListener('click',()=>{ if(!active) start(); });
 $('#hangBtn').onclick=end;
 // 통화 중에 창을 닫아도 접수 기록은 남깁니다.
