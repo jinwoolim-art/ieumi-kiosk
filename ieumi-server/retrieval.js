@@ -25,10 +25,10 @@
 const db = require('./db');
 const env = require('./env.js');
 
-const BUDGET = Number(env.RETRIEVAL_BUDGET || 3500);   // 프롬프트에 넣을 글자 수
+const BUDGET = Number(env.RETRIEVAL_BUDGET || 6000);   // 탐 팀: facts 상시 제거 → detail이 유일한 상세 소스라 넉넉히(3500→6000)
 const PER_SERVICE = Number(env.RETRIEVAL_PER_SERVICE || 3);
 const CANDIDATES = Number(env.RETRIEVAL_CANDIDATES || 24);
-const MIN_SCORE = Number(env.RETRIEVAL_MIN_SCORE || 2);
+const MIN_SCORE = Number(env.RETRIEVAL_MIN_SCORE || 1);   // 탐 팀: facts 안전망 제거 → 놓침 방지 위해 관대하게(2→1)
 
 // 조사를 떼어 냅니다 — "강좌를" 로 찾으면 "강좌" 가 적힌 줄을 놓칩니다.
 // 긴 것부터 떼야 '에서' 가 '에' 로 먼저 잘리지 않습니다.
@@ -199,7 +199,7 @@ async function forQuestion(persona, question, { budget = BUDGET } = {}) {
          + r.body.split('\n').map((l) => '  ' + l).join('\n');
   }).join('\n\n');
 
-  return `\n\n[자세한 자료 — 어르신이 지금 물으신 것과 관련된 대목만 뽑았습니다]
+  return `\n\n[확인된 자료 — 어르신이 지금 물으신 것과 관련된 대목만, 각 서비스 홈페이지에서 그대로 옮겨 온 것입니다]
 아래는 각 기관 홈페이지(또는 그 홈페이지의 안내문 그림)에서 그대로 옮겨 온 것입니다.
 - 여기 적힌 것은 <그대로 말씀드려도 됩니다.> 강좌 이름, 요일과 시간, 수강료, 정원, 모집기간 모두 마찬가지입니다.
 - 어르신이 "뭐가 있나" 하고 물으시면 <실제 이름을 들어> 두세 개만 말씀드립니다. "여러 가지가 있어요" 는 아무 답도 아닙니다.
