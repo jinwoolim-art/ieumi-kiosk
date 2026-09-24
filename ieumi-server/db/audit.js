@@ -9,6 +9,7 @@ const env = require('../env.js');
   const rows = await db.all(`
     SELECT s.code, s.sub, s.link,
            count(c.id)::int AS chunks,
+           count(c.id) FILTER (WHERE c.kind='image')::int AS img_chunks,
            coalesce(sum(length(c.body)),0)::int AS chars
       FROM services s
       LEFT JOIN source_chunks c ON c.service_id = s.id
@@ -39,8 +40,9 @@ const env = require('../env.js');
     console.log(`  ${String(r.chunks).padStart(3)}chunk ${String(r.chars).padStart(6)}자  [${r.code}] ${r.sub}\n       link: ${r.link||'(없음)'}`));
 
   console.log(`\n--- 전체 ${rows.length}개 서비스 목록 (파크골프/IT페스티벌이 여기 있나 확인) ---`);
+  console.log('  (chunk=조각수 / 그림=포스터AI판독수 / 자=본문글자수)');
   [...rows].sort((a,b)=>String(a.code).localeCompare(String(b.code))).forEach(r =>
-    console.log(`  [${r.code}] ${(r.sub||'').padEnd(24)} ${String(r.chunks).padStart(3)}chunk  ${r.link||''}`));
+    console.log(`  [${r.code}] ${(r.sub||'').padEnd(20)} ${String(r.chunks).padStart(3)}chunk 그림${r.img_chunks} ${String(r.chars).padStart(6)}자  ${r.link||''}`));
 
   console.log(`\n============================================================\n`);
   process.exit(0);
