@@ -286,7 +286,7 @@ const say=(t)=>{subtitleDone='';bubble.innerHTML=t;bubble.classList.toggle('long
 // what seniors said. CLOVA will not accept MediaRecorder's webm/opus, so raw PCM
 // is captured and wrapped as 16 kHz mono WAV here.
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-let sttMode='clova';        // 클로바가 안 되면 브라우저 인식으로 내려앉습니다
+let sttMode = SR ? 'browser' : 'clova';   // 탐 팀: 7월 원본처럼 Web Speech 우선(브라우저가 말끝을 자동 감지 → 자연스럽고 '계속 듣기' 문제 없음). Web Speech 미지원 브라우저만 클로바로
 let rec=null, listening=false;
 
 const MIC={
@@ -980,7 +980,7 @@ function prewarmGreeting(){
 async function start(){
   active=true; history=[]; offerSms=false; pickedJob=null; awaitingFollowup=false;
   lastSummary=''; lastCategory=''; smsSent=false; memberInfo=null; phone='';
-  lastServiceCode=''; lastServiceName=''; quietRounds=0; emptyRounds=0; sttMode='clova';
+  lastServiceCode=''; lastServiceName=''; quietRounds=0; emptyRounds=0; sttMode = SR ? 'browser' : 'clova';
   call.classList.remove('invite'); hang.classList.add('show'); actions.classList.remove('show');
   // 서버를 미리 깨웁니다 (§3-6). 기다리지 않습니다 — 인사말을 하는 동안 뒤에서
   // 복지관 설정·날씨·일자리·프롬프트 캐시가 한꺼번에 데워집니다. 어르신이 첫
