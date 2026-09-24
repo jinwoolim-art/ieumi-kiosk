@@ -281,7 +281,7 @@ async function fetchOnce(url) {
 // 공개 페이지를 하루 한 번 읽는 것과 다른 이야기입니다.
 // One hop only. Two would be crawling the whole site, which is a different thing
 // from reading a handful of public pages once a day.
-const SUBPAGE_MAX = Number(env.SUBPAGE_MAX || 4);
+const SUBPAGE_MAX = Number(env.SUBPAGE_MAX || 8);   // 탐 팀: 공지 많은 기관(느티나무 등)의 개별 글을 더 따라가도록 4→8. .env SUBPAGE_MAX로 조정 가능
 
 // 어떤 링크를 따라갈 것인가 — 어르신이 물으시는 것이 있을 만한 곳.
 // 점수가 높을수록 먼저 갑니다. 글자는 링크 이름에서, 그다음 주소에서 찾습니다.
