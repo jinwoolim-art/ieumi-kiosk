@@ -186,7 +186,7 @@ async function lookupMember(p){
 // with a wage the source has no field for (PROJECT.md §11). The server resolves
 // the index now and sends back the posting it actually used.
 let JOBS=[];
-let history=[], active=false, offerSms=false, pickedJob=null, awaitingFollowup=false;
+let history=[], active=false, offerSms=false, pickedJob=null, awaitingFollowup=false, awaitingConfirm=false;
 let lastSummary='', lastCategory='', smsSent=false;
 let lastServiceCode='', lastServiceName='';   // 이음이가 짚어낸 서비스 (§6-P1)
 
@@ -796,6 +796,7 @@ async function onUser(text){
   if(!active) return;
   clearIdle();
   abortListening();
+  if(awaitingConfirm){ handleConfirm(text); return; }   // 탐 팀: 문자 확인 단계면 예/아니요로 처리
   quietRounds=0; emptyRounds=0;   // 어르신 말씀이 들어왔습니다 — 눈금을 되돌립니다
   actions.classList.remove('show');
   setStatus(''); typerow.classList.remove('show');
@@ -842,7 +843,9 @@ $('#typein').addEventListener('keydown',e=>{ if(e.key==='Enter') $('#typebtn').c
 let phone='';
 const fmtp=p=>{let d=p;if(d.length>3&&d.length<=7)d=d.slice(0,3)+'-'+d.slice(3);else if(d.length>7)d=d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7,11);return d||'​';};
 function renderNum(){ num.textContent=fmtp(phone); }
-function openKeypad(){ phone=''; renderNum(); kpEntry.classList.remove('off'); kpConfirm.classList.add('off'); kpSent.classList.add('off'); kwrap.classList.remove('hidden'); actions.classList.remove('show'); abortListening(); }
+function openKeypad(){ phone=''; renderNum(); kpEntry.classList.remove('off'); kpConfirm.classList.add('off'); kpSent.classList.add('off'); kwrap.classList.remove('hidden'); actions.classList.remove('show'); abortListening();
+  // 탐 팀: 키패드가 뜰 때 음성으로도 유도 — 어르신이 화면을 못 보셔도 무엇을 할지 아시도록
+  speak('문자로 보내드릴게요. 화면에 전화번호를 하나씩 눌러 주신 다음, 아래 초록색 문자 보내기 버튼을 눌러 주세요.'); }
 async function openConfirm(){
   cnum.textContent=fmtp(phone);
   await lookupMember(phone);          // 복지관 명단에 이 번호가 있는지 서버에 확인
@@ -850,12 +853,30 @@ async function openConfirm(){
   if(nm){
     // 회원 명단에서 번호가 매칭됨 → 성함 확인 안내
     ctitle.innerHTML='✅ <b>'+nm+'</b> 어르신, 성함이 확인되었어요<br>이 번호로 보내드릴까요?';
-    speak(nm+' 어르신, 성함이 확인되었어요. '+digitsKo(phone)+' 번호로 보내드릴까요?');
   }else{
     ctitle.textContent='이 번호로 문자를 보내드릴까요?';
-    speak(digitsKo(phone)+' 번호로 문자를 보내드릴까요?');
   }
   kpEntry.classList.add('off'); kpConfirm.classList.remove('off');
+  // 탐 팀: 확인도 음성으로 — 질문을 말한 뒤 마이크를 열어 "예/아니요"를 듣습니다(화면 버튼도 그대로 동작)
+  const ask = nm ? (nm+' 어르신, 성함이 확인되었어요. '+digitsKo(phone)+' 번호로 보내드릴까요?')
+                 : (digitsKo(phone)+' 번호로 문자를 보내드릴까요?');
+  await speak(ask);
+  awaitingConfirm=true;
+  if(active) startListening();
+}
+// 확인 단계 음성 답 처리 — "예" 계열이면 발송, "아니요" 계열이면 다시 입력, 애매하면 다시 여쭙니다.
+function handleConfirm(text){
+  awaitingConfirm=false;
+  if(/(아니|다시|취소|아뇨|안\s?돼|틀|잘못)/.test(text)){
+    phone=''; renderNum(); kpConfirm.classList.add('off'); kpEntry.classList.remove('off');
+    speak('네, 전화번호를 다시 눌러 주세요.');
+  }else if(/(예|네|응|그래|보내|맞|좋|부탁|해\s?줘|주세요)/.test(text)){
+    doSend();
+  }else{
+    awaitingConfirm=true;
+    speak('이 번호로 보내드릴까요? 예 또는 아니요로 말씀해 주세요.');
+    if(active) startListening();
+  }
 }
 // 발송 완료 카드 표시 (문자 내용 + 받는 번호)
 //
@@ -928,9 +949,9 @@ async function doSend(){
   awaitingFollowup=true; history.push({role:'assistant',content:fu}); await speak(fu); readyForUser();
 }
 kwrap.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)return; const a=b.dataset.act;
-  if(a==='cyes'){ doSend(); return; }
+  if(a==='cyes'){ awaitingConfirm=false; abortListening(); doSend(); return; }
   if(a==='sdone'){ kwrap.classList.add('hidden'); kpSent.classList.add('off'); readyForUser(); return; }
-  if(a==='cno'){ phone=''; renderNum(); kpConfirm.classList.add('off'); kpEntry.classList.remove('off'); speak('네, 다시 눌러 주세요.'); return; }
+  if(a==='cno'){ awaitingConfirm=false; abortListening(); phone=''; renderNum(); kpConfirm.classList.add('off'); kpEntry.classList.remove('off'); speak('네, 전화번호를 다시 눌러 주세요.'); return; }
   if(a==='del'){ phone=phone.slice(0,-1); return renderNum(); }
   if(a==='send'){ if(phone.length<10){ num.textContent='번호를 확인해 주세요'; return; } openConfirm(); return; }
   if(phone.length<11){ phone+=b.textContent.trim(); renderNum(); }});
