@@ -1,0 +1,96 @@
+// 이음이 QA 자동 평가 — 질문 뱅크를 이음이에 돌리고, 답변을 Haiku가 채점한다.
+// 단순 키워드 평가의 오판(되묻기·정직한 안내를 구멍으로 치는 것)을 없애기 위함.
+//   서버(start-kiosk)가 켜져 있어야 하고, .env에 ANTHROPIC_API_KEY 필요.
+//   node db/qa-eval.js                  (기본: 서초 토큰)
+//   node db/qa-eval.js <c토큰>          (다른 센터)
+const env = require('../env.js');
+const fs = require('fs');
+
+const AKEY = env.ANTHROPIC_API_KEY;
+const EVAL_MODEL = env.QA_EVAL_MODEL || 'claude-haiku-4-5';   // 평가는 싼 모델로
+const KIOSK = env.QA_KIOSK_URL || 'http://localhost:8791';
+const CTOKEN = process.argv[2] || 'I_qS8Kz79nnRApFP0k0lvs1xScOJBGQV';   // 서초
+
+// 1차 질문 뱅크 (엑셀 14개 중분류 기반). 확장은 이 배열에 추가만 하면 됩니다.
+const QBANK = [
+  ['건강-응급진료','밤에 문 연 약국 어디예요?'],['건강-응급진료','휴일에 진료 받으려면 어디로 가요?'],['건강-응급진료','응급실 가야 할 것 같아요'],
+  ['건강-치매','치매 검사 받고 싶어요'],['건강-치매','요즘 우울한데 상담 받을 수 있나요?'],
+  ['건강-약복용','혈압약은 언제 먹어야 해요?'],['건강-약복용','당뇨약 먹는 시간 알려주세요'],
+  ['건강-예방접종','독감 주사 어디서 맞아요?'],['건강-예방접종','대상포진 예방접종 하고 싶어요'],['건강-예방접종','건강검진 받으려면 어떻게 해요?'],
+  ['복지-현금지원','기초연금 얼마나 나와요?'],['복지-현금지원','노령연금 신청하려면?'],
+  ['복지-생활비','지하철 공짜로 탈 수 있어요?'],['복지-생활비','통신비 할인 되나요?'],['복지-생활비','전기세 감면 받고 싶어요'],
+  ['복지-일상돌봄','요양보호사 어떻게 신청해요?'],['복지-일상돌봄','돌봄 서비스 받고 싶어요'],['복지-일상돌봄','장기요양 등급은 어떻게 받아요?'],
+  ['생활-날씨','오늘 날씨 어때요?'],['생활-날씨','미세먼지 심해요?'],['생활-날씨','더위 쉼터 어디 있어요?'],
+  ['생활-교통','버스 언제 와요?'],['생활-교통','셔틀버스 시간표 알려주세요'],
+  ['생활-교육여가','노래교실 어디서 해요?'],['생활-교육여가','스마트폰 배우고 싶어요'],['생활-교육여가','복지관 프로그램 뭐 있어요?'],
+  ['생활-교통약자','엘리베이터 있는 지하철 출구 알려주세요'],['생활-교통약자','계단 없는 길로 가고 싶어요'],
+  ['일자리-공공','구청 일자리 있어요?'],['일자리-공공','노인 일자리 신청하려면?'],['일자리-공공','교통안전 일자리 하고 싶어요'],
+  ['일자리-민간','경비원 일자리 구해요'],['일자리-민간','주차관리원 일자리 있어요?'],
+  ['금융안전-디지털금융','보이스피싱 조심하는 법 알려주세요'],['금융안전-디지털금융','사기 전화가 왔어요'],['금융안전-디지털금융','스미싱이 뭐예요?'],
+];
+
+async function ask(q) {
+  const r = await fetch(KIOSK + '/chat', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ history: [{ role: 'user', content: q }], c: CTOKEN, lang: 'ko' }),
+  });
+  const d = await r.json();
+  return { reply: (d.parsed && d.parsed.reply) || d.raw || '', svc: d.serviceName || '-' };
+}
+
+async function evaluate(q, a) {
+  const prompt = `당신은 어르신용 복지 안내 키오스크 "이음이"의 답변을 평가하는 심사관입니다.
+[질문] ${q}
+[이음이 답변] ${a}
+
+평가 기준:
+- "충실": 질문에 맞는 구체적 정보를 주거나, 정보가 없을 땐 적절한 기관·전화번호로 안내함. (어르신께 되묻거나 "문자로 보내드릴까요" 하는 것은 정상이며 충실로 봅니다.)
+- "부족": 아무 정보·안내 없이 모른다고만 하거나 질문과 동떨어짐.
+- "틀림": 사실과 다른 정보를 말함.
+
+반드시 JSON만 출력하세요(다른 말 금지): {"verdict":"충실|부족|틀림","reason":"15자 내외 이유"}`;
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': AKEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: EVAL_MODEL, max_tokens: 150, messages: [{ role: 'user', content: prompt }] }),
+  });
+  const d = await r.json();
+  const txt = (d.content && d.content[0] && d.content[0].text) || '';
+  try { return JSON.parse(txt.match(/\{[\s\S]*\}/)[0]); }
+  catch { return { verdict: '?', reason: (txt || JSON.stringify(d).slice(0, 60)).slice(0, 40) }; }
+}
+
+(async () => {
+  if (!AKEY) { console.error('\n  ✖ ANTHROPIC_API_KEY 없음 (ieumi-server/.env)\n'); process.exit(1); }
+  console.log(`\n  이음이 QA 자동 평가 — ${QBANK.length}개 질문 · 평가모델 ${EVAL_MODEL}\n`);
+  const rows = [];
+  for (let i = 0; i < QBANK.length; i++) {
+    const [cat, q] = QBANK[i];
+    try {
+      const { reply, svc } = await ask(q);
+      const ev = await evaluate(q, reply);
+      rows.push({ cat, q, svc, verdict: ev.verdict, reason: ev.reason, reply: reply.slice(0, 90) });
+      const mark = { '충실': '✅', '부족': '❌', '틀림': '🟥' }[ev.verdict] || '❓';
+      console.log(`  ${String(i + 1).padStart(2)}/${QBANK.length} ${mark} ${cat.padEnd(14)} ${q.slice(0, 18)}  (${ev.reason})`);
+    } catch (e) {
+      rows.push({ cat, q, svc: '-', verdict: 'ERR', reason: String(e).slice(0, 40), reply: '' });
+      console.log(`  ${String(i + 1).padStart(2)}/${QBANK.length} ❓ ERR ${q.slice(0, 18)}`);
+    }
+  }
+  // CSV 저장 (엑셀용 BOM)
+  const esc = (x) => `"${String(x ?? '').replace(/"/g, '""')}"`;
+  const csv = ['분류,질문,출처(참조서비스),평가,이유,답변요약']
+    .concat(rows.map(r => [r.cat, r.q, r.svc, r.verdict, r.reason, (r.reply || '').replace(/\n/g, ' ')].map(esc).join(',')))
+    .join('\n');
+  fs.writeFileSync('qa-eval-result.csv', '﻿' + csv);
+
+  const c = {}; rows.forEach(r => c[r.verdict] = (c[r.verdict] || 0) + 1);
+  const ok = c['충실'] || 0, bad = (c['부족'] || 0) + (c['틀림'] || 0);
+  console.log(`\n  ===== 결과 =====`);
+  console.log(`  ✅ 충실 ${ok} / ❌ 부족 ${c['부족'] || 0} / 🟥 틀림 ${c['틀림'] || 0} / ❓ ${c['?'] || 0} · ERR ${c['ERR'] || 0}`);
+  if (ok + bad) console.log(`  → 정확도: ${ok}/${ok + bad} = ${Math.round(ok / (ok + bad) * 100)}%`);
+  console.log(`\n  보강 필요(부족·틀림):`);
+  rows.filter(r => r.verdict === '부족' || r.verdict === '틀림').forEach(r => console.log(`    [${r.verdict}] ${r.cat} | ${r.q}  →(${r.svc}) ${r.reason}`));
+  console.log(`\n  매트릭스 저장: ieumi-server/qa-eval-result.csv (엑셀로 열기)\n`);
+  process.exit(0);
+})().catch(e => { console.error('\n  오류:', e.message, '\n'); process.exit(1); });
