@@ -1315,6 +1315,15 @@ async function refreshOne(service, { force = false, deps = {} } = {}) {
   // 흔들렸다고 어제까지 답하던 강좌표가 사라지면, 고치기 전보다 나빠집니다.
   const chunks = await rechunk(service);
 
+  // 갱신 전략 [A] 변경 감지 — 여기까지 왔다는 건 내용이 바뀌어 다시 요약했다는 뜻입니다
+  // (안 바뀐 서비스는 위 'unchanged' 에서 일찍 반환되어 캐시를 건드리지 않습니다).
+  // 이 서비스를 쓰는 복지관의 QA 캐시를 비워, 저장된 옛 답이 나가지 않게 합니다.
+  // best-effort — 캐시 무효화 실패가 학습을 막지 않습니다.
+  try {
+    const purged = await require('./qa-cache').invalidateForService(service.id);
+    if (purged) notes.push(`QA 캐시 ${purged}건 무효화(자료 변경)`);
+  } catch { /* 캐시 테이블이 없거나 접근 불가 — 무시 */ }
+
   return { code: service.code, status: empty ? 'empty' : 'ok',
            chars: merged.length, factChars: (facts.ko || '').length,
            pages: pages.length, subpages: pages.filter((p) => p.kind === 'subpage').length,

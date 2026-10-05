@@ -86,6 +86,37 @@ async function markHit(id) {
   );
 }
 
+// ── 갱신 전략 [A] 변경 감지 (설계 7-2) ──────────────────────────────────────
+// 서비스 자료가 실제로 바뀌어 다시 학습(sync)되면, 그 서비스를 쓰는 복지관의 캐시를
+// 비웁니다. 저장된 옛 답이 그대로 나가는 것을 막기 위함입니다("stale 보다 miss 가 낫다").
+// 보수적으로 "그 서비스를 쓰는 센터 전체"를 비웁니다 — 캐시 답은 질문별 자료(retrieval)에
+// 서비스가 섞여 들어가므로, service_code 한 칸만으로는 어느 답이 그 서비스에 기댔는지
+// 정확히 가릴 수 없기 때문입니다. 내용이 실제로 바뀌는 일은 드물어(대부분 unchanged)
+// 캐시는 평소엔 살아 있습니다. 어떤 오류도 sync 를 막지 않습니다(best-effort).
+async function invalidateForService(serviceId) {
+  if (!serviceId) return 0;
+  try {
+    const r = await db.query(
+      `DELETE FROM qa_cache
+        WHERE center_id IN (SELECT center_id FROM center_services
+                             WHERE service_id = $1 AND enabled = true)`,
+      [serviceId]);
+    return r.rowCount || 0;
+  } catch { return 0; }
+}
+
+async function invalidateCenter(centerId) {
+  if (!centerId) return 0;
+  try { const r = await db.query(`DELETE FROM qa_cache WHERE center_id = $1`, [centerId]); return r.rowCount || 0; }
+  catch { return 0; }
+}
+
+// 갱신 전략 [B] 안전망 — 전체 비우기(월 1회 재검증 등에서 쓰거나, TTL 과 함께).
+async function invalidateAll() {
+  try { const r = await db.query(`DELETE FROM qa_cache`); return r.rowCount || 0; }
+  catch { return 0; }
+}
+
 async function logEvent({ centerId, normalized, decision, reason }) {
   await db.query(
     `INSERT INTO qa_cache_event (center_id, normalized_q, decision, reason, mode)
@@ -136,4 +167,5 @@ async function forTurn({ centerId, text, fixedPrompt }) {
 module.exports = {
   forTurn, normalize, promptHash, isVolatile, eligibilityReason,
   lookup, store, markHit, logEvent, MODE,
+  invalidateForService, invalidateCenter, invalidateAll,
 };
