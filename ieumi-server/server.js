@@ -73,7 +73,8 @@ function proxyFetch(url, opts = {}) {
 }
 const pfetch = (url, opts) => PROXY ? proxyFetch(url, opts) : fetch(url, opts);
 // 프롬프트 구성은 prompt.js 로, 문자 본문은 sms.js 로 분리했습니다 (테스트 가능하도록).
-const { DEFAULT_PERSONA, systemBlocks, parseModelOutput } = require('./prompt');
+const { DEFAULT_PERSONA, buildSystem, systemBlocks, parseModelOutput } = require('./prompt');
+const qaCache = require('./qa-cache');   // QA 캐시 (Phase A, 기본 off — docs/이음이-시맨틱캐시-설계.md)
 const { smsContent } = require('./sms');
 
 // A kiosk identifies its center with a token in its URL; without one the server
@@ -552,6 +553,41 @@ const server = http.createServer(async (req, res) => {
       };
       const attach = (out) => attachJobs(attachService(out));
 
+      // ── QA 캐시 (Phase A) ────────────────────────────────────────────────
+      // 비변동·반복 질문의 답을 재사용해 LLM 호출을 줄입니다. 기본 off, shadow 는
+      // 조회·기록만(답은 늘 LLM), on 은 히트 시 캐시 답. 어떤 오류도 대화를 막지 않습니다.
+      // 변동 자리(일자리)가 붙은 답은 캐시하지 않습니다 — 매일 바뀌므로.
+      const cacheTurn = await qaCache.forTurn({
+        centerId: persona.center_id,
+        text: lastAsked ? String(lastAsked.content) : '',
+        fixedPrompt: buildSystem(persona),
+      });
+      const resolveSvc = (code) => {
+        const s = code && (persona.services || []).find((x) => x.code === code);
+        return s ? { serviceCode: s.code, serviceName: s.sub } : {};
+      };
+      const saveToCache = (out) => {
+        if (cacheTurn && cacheTurn.store && out && out.parsed && out.parsed.reply && !out.job) {
+          cacheTurn.store(out.parsed.reply, out.serviceCode);   // fire-and-forget (내부 catch)
+        }
+      };
+
+      // on 모드 히트: LLM 없이 저장된 답을 바로 돌려줍니다 (shadow 에서는 hit 가 오지 않음).
+      if (cacheTurn && cacheTurn.hit) {
+        const out = { parsed: { reply: cacheTurn.answer }, raw: cacheTurn.answer,
+                      usage: null, fromCache: true, jobs: jobsInfo.jobs,
+                      ...resolveSvc(cacheTurn.serviceCode) };
+        if (stream) {
+          cors(res);
+          res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8',
+                               'cache-control': 'no-store', 'x-accel-buffering': 'no' });
+          res.write(JSON.stringify({ t: cacheTurn.answer }) + '\n');
+          res.write(JSON.stringify({ done: true, ...out }) + '\n');
+          return res.end();
+        }
+        return json(res, 200, out);
+      }
+
       if (stream) {
         cors(res);
         res.writeHead(200, {
@@ -565,15 +601,18 @@ const server = http.createServer(async (req, res) => {
         try {
           const out = await callClaudeStream(history || [], jobsInfo, chosen, persona,
             (text) => line({ t: text }), detail);
-          line({ done: true, ...attach(out) });
+          const attached = attach(out);
+          line({ done: true, ...attached });
+          saveToCache(attached);   // 답을 보낸 뒤 적재 — 어르신을 기다리게 하지 않음
         } catch (e) {
           line({ done: true, error: String(e.message || e) });
         }
         return res.end();
       }
 
-      return json(res, 200, attach(
-        await callClaude(history || [], jobsInfo, chosen, persona, detail)));
+      const out = attach(await callClaude(history || [], jobsInfo, chosen, persona, detail));
+      saveToCache(out);
+      return json(res, 200, out);
     }
     // 어르신이 통화를 시작하실 때 키오스크가 두드립니다 (§3-6).
     // 바로 202 로 답하고 데우는 일은 뒤에서 합니다 — 키오스크는 기다리지 않습니다.
