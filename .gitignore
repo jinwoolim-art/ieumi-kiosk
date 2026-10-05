@@ -9,3 +9,17 @@ node_modules/
 
 # unattended run logs
 ieumi-server/logs/
+
+# QA 검수 페이지로 보낼 임시 데이터 (qa-review-export.js 가 다시 만듦)
+ieumi-server/qa-runs/review/
+
+# .env 백업도 비밀 — 절대 커밋 금지 (2026-10-05: .env.bak 유출 막음)
+.env.bak
+ieumi-server/.env.bak
+*.env.bak
+
+# 로컬 생성물 (스크립트가 다시 만듦)
+ieumi-server/kiosk_url.txt
+ieumi-server/tools/tunnel_url.txt
+ieumi-server/qa-eval-result.csv
+ieumi-server/qa-runs/

@@ -1,0 +1,420 @@
+<title>이음이 QA 검수</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Layout: 위에 회차 요약(지표·추이·분류), 아래에 검수 카드 목록 — 훑어보고, 내려가서 판정한다. */
+:root {
+  --bg: #f4f6f5; --surface: #ffffff; --ink: #18211f; --muted: #5d6b67; --line: #d9e0dd;
+  --accent: #1d6670; --accent-soft: #e2eff0;
+  --good: #2d7a4c; --good-soft: #e3f1e8; --warn: #a96b12; --warn-soft: #f8eedc; --bad: #b0343a; --bad-soft: #f8e4e4;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --font-num: "IBM Plex Mono", ui-monospace, "Consolas", monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121816; --surface: #1a2220; --ink: #e5ebe9; --muted: #98a6a2; --line: #2c3734;
+  --accent: #5fb3bc; --accent-soft: #1d3436;
+  --good: #6cc492; --good-soft: #1b3125; --warn: #e0a54a; --warn-soft: #382c17; --bad: #ec7d80; --bad-soft: #3a1f21;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #121816; --surface: #1a2220; --ink: #e5ebe9; --muted: #98a6a2; --line: #2c3734;
+  --accent: #5fb3bc; --accent-soft: #1d3436;
+  --good: #6cc492; --good-soft: #1b3125; --warn: #e0a54a; --warn-soft: #382c17; --bad: #ec7d80; --bad-soft: #3a1f21;
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.6; }
+.wrap { max-width: 980px; margin: 0 auto; padding-inline: 16px; padding-block: 24px 64px; display: grid; gap: 20px; }
+h1 { font-size: 22px; font-weight: 700; margin: 0; text-wrap: balance; }
+h2 { font-size: 15px; font-weight: 600; margin: 0; }
+.num { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+.label { font-size: 12px; letter-spacing: .04em; color: var(--muted); }
+
+header { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center; justify-content: space-between; }
+header .title { display: grid; gap: 2px; min-width: 0; }
+select, button, textarea { font: inherit; color: inherit; }
+select { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.notice { padding: 10px 14px; border-radius: 8px; background: var(--warn-soft); color: var(--ink); font-size: 14px; }
+.notice b { color: var(--warn); }
+
+.metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 720px) { .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.metric { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 4px; min-width: 0; }
+.metric .v { font-family: var(--font-num); font-size: 26px; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.metric .s { font-size: 12.5px; color: var(--muted); }
+.metric.key { border-color: var(--accent); }
+
+.panels { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 12px; }
+@media (max-width: 720px) { .panels { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 10px; min-width: 0; }
+.panel svg { width: 100%; height: auto; display: block; }
+.axis { fill: var(--muted); font-size: 11px; font-family: var(--font-num); }
+.grid { stroke: var(--line); stroke-width: 1; }
+.cats { display: grid; gap: 7px; }
+.cat { display: grid; grid-template-columns: 8.5em minmax(0, 1fr) 3.6em; gap: 8px; align-items: center; font-size: 13px; }
+.cat .bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.cat .bar i { display: block; height: 100%; background: var(--accent); }
+.cat.low .bar i { background: var(--warn); }
+.cat .n { text-align: right; font-family: var(--font-num); font-size: 12px; color: var(--muted); }
+
+.queue-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.filters button { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; font-size: 13px; cursor: pointer; }
+.filters button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.list { display: grid; gap: 12px; }
+
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: grid; gap: 10px; min-width: 0; }
+.card.done-review { border-left: 3px solid var(--good); }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 12.5px; color: var(--muted); }
+.chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.chip.hole { background: var(--bad-soft); color: var(--bad); }
+.chip.sample { background: var(--accent-soft); color: var(--accent); }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+.pill.v-충실 { background: var(--good-soft); color: var(--good); }
+.pill.v-부족 { background: var(--warn-soft); color: var(--warn); }
+.pill.v-틀림 { background: var(--bad-soft); color: var(--bad); }
+.pill.v-other { background: var(--line); color: var(--muted); }
+.q { font-size: 16.5px; font-weight: 600; }
+.reply { white-space: pre-wrap; background: var(--bg); border-radius: 6px; padding: 10px 12px; font-size: 14.5px; max-width: 70ch; overflow-wrap: anywhere; }
+.reply .cut { color: var(--warn); font-size: 12.5px; }
+.why { font-size: 13.5px; }
+
+.judge { border-top: 1px dashed var(--line); padding-top: 10px; display: grid; gap: 10px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { background: var(--surface); border: 0; padding: 6px 16px; cursor: pointer; font-weight: 600; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"][data-v="충실"] { background: var(--good); color: var(--surface); }
+.seg button[aria-pressed="true"][data-v="부족"] { background: var(--warn); color: var(--surface); }
+.seg button[aria-pressed="true"][data-v="틀림"] { background: var(--bad); color: var(--surface); }
+.fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+@media (max-width: 640px) { .fields { grid-template-columns: minmax(0, 1fr); } }
+.field { display: grid; gap: 4px; min-width: 0; }
+textarea { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; min-height: 64px; resize: vertical; width: 100%; }
+.row { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+.save { background: var(--accent); color: var(--surface); border: 0; border-radius: 6px; padding: 7px 18px; font-weight: 600; cursor: pointer; }
+.save:disabled { opacity: .45; cursor: default; }
+.status { font-size: 12.5px; color: var(--muted); }
+.agree { font-size: 12.5px; font-weight: 600; }
+.agree.yes { color: var(--good); } .agree.no { color: var(--bad); }
+.empty { background: var(--surface); border: 1px dashed var(--line); border-radius: 8px; padding: 28px 20px; text-align: center; color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) { .cat .bar i { transition: width .3s ease; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="title">
+      <h1>이음이 QA 검수</h1>
+      <span class="muted" id="sub">서초 어르신 음성 복지 키오스크 · LLM 채점을 사람이 확인합니다</span>
+    </div>
+    <label class="row"><span class="label">회차</span><select id="round" aria-label="회차 선택"></select></label>
+  </header>
+
+  <div class="notice" id="notice" hidden></div>
+
+  <section class="metrics" aria-label="회차 요약">
+    <div class="metric"><span class="label">LLM 정확도</span><span class="v" id="m-acc">—</span><span class="s" id="m-acc-s">회차 데이터를 기다리는 중</span></div>
+    <div class="metric key"><span class="label">사람-LLM 일치율</span><span class="v" id="m-agree">—</span><span class="s" id="m-agree-s">무작위 표본을 검수하면 나옵니다</span></div>
+    <div class="metric"><span class="label">검수 진행</span><span class="v" id="m-prog">—</span><span class="s" id="m-prog-s">구멍 전부 + 표본 20개</span></div>
+    <div class="metric"><span class="label">진짜 구멍</span><span class="v" id="m-holes">—</span><span class="s" id="m-holes-s">사람이 확인한 부족·틀림</span></div>
+  </section>
+
+  <section class="panels">
+    <div class="panel">
+      <h2>정확도 추이</h2>
+      <div id="trend"><p class="muted">회차가 쌓이면 여기에 선으로 이어집니다.</p></div>
+    </div>
+    <div class="panel">
+      <h2>분류별 성공률 <span class="muted" id="cat-round"></span></h2>
+      <div class="cats" id="cats"><p class="muted">회차를 고르면 분류별로 나옵니다.</p></div>
+    </div>
+  </section>
+
+  <section class="list" aria-label="검수 목록">
+    <div class="queue-head">
+      <h2>검수 목록 <span class="muted num" id="q-count"></span></h2>
+      <div class="filters" id="filters" role="group" aria-label="목록 거르기">
+        <button type="button" data-f="todo" aria-pressed="true">미검수</button>
+        <button type="button" data-f="hole" aria-pressed="false">구멍</button>
+        <button type="button" data-f="sample" aria-pressed="false">표본</button>
+        <button type="button" data-f="fix" aria-pressed="false">보강 대기</button>
+        <button type="button" data-f="all" aria-pressed="false">전체</button>
+      </div>
+    </div>
+    <div class="list" id="list">
+      <div class="empty">검수할 문항이 아직 없습니다.<br>Claude에게 “검수 데이터 올려줘”라고 하면 최근 회차의 구멍과 표본 20개가 여기에 들어옵니다.</div>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const VERDICTS = ['충실', '부족', '틀림'];
+  const ACTIONS = ['', '자료 보강(sync)', '링크 깊이 조정', '프롬프트 규칙', '서비스 추가', '조치 불필요'];
+  const state = { runs: [], items: [], reviews: new Map(), round: null, filter: 'todo', canWrite: true, db: null, drafts: new Map() };
+  const $ = (id) => document.getElementById(id);
+
+  function el(tag, attrs, ...kids) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (v == null || v === false) continue;
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v;
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), v); else n.setAttribute(k, v === true ? '' : v);
+    }
+    for (const k of kids.flat()) if (k != null) n.append(k.nodeType ? k : document.createTextNode(String(k)));
+    return n;
+  }
+  const pill = (v) => el('span', { class: 'pill ' + (VERDICTS.includes(v) ? 'v-' + v : 'v-other'), text: v || '?' });
+  const pct = (a, b) => b ? Math.round(a / b * 1000) / 10 : null;
+
+  // ---------- 계산 ----------
+  function roundItems() { return state.items.filter(i => i.round === state.round).sort((a, b) => (a.kind === b.kind ? a.idx - b.idx : a.kind === 'hole' ? -1 : 1)); }
+  function stats() {
+    const items = roundItems();
+    const rv = (i) => state.reviews.get(i.id);
+    const reviewed = items.filter(rv);
+    const sample = items.filter(i => i.kind === 'sample');
+    const sampleDone = sample.filter(rv);
+    const agree = sampleDone.filter(i => rv(i).human === i.llm).length;
+    const holes = items.filter(i => i.kind === 'hole');
+    const holesDone = holes.filter(rv);
+    const realHoles = holesDone.filter(i => rv(i).human !== '충실').length;
+    const fixWait = items.filter(i => rv(i) && rv(i).human !== '충실' && rv(i).action && rv(i).action !== '조치 불필요' && !rv(i).done).length;
+    return { items, reviewed, sample, sampleDone, agree, holes, holesDone, realHoles, fixWait };
+  }
+
+  // ---------- 그리기 ----------
+  function renderRoundSelect() {
+    const sel = $('round');
+    const cur = sel.value;
+    sel.replaceChildren(...state.runs.slice().reverse().map(r => el('option', { value: r.round, text: `${r.round}회차 · ${r.when || ''}` })));
+    if (state.round == null && state.runs.length) {
+      // 검수 대상이 있는 가장 최근 회차부터 엽니다.
+      const withItems = state.runs.map(r => r.round).filter(n => state.items.some(i => i.round === n));
+      state.round = withItems.length ? Math.max(...withItems) : state.runs[state.runs.length - 1].round;
+    }
+    if (state.round != null) sel.value = String(state.round); else if (cur) sel.value = cur;
+  }
+
+  function renderMetrics() {
+    const run = state.runs.find(r => r.round === state.round);
+    const s = stats();
+    if (run) {
+      $('m-acc').textContent = run.accuracy != null ? run.accuracy + '%' : '—';
+      $('m-acc-s').textContent = `${run.total}문항 · 충실 ${run.ok} · 부족 ${run.lack} · 틀림 ${run.wrong}`;
+    }
+    if (s.sampleDone.length) {
+      $('m-agree').textContent = pct(s.agree, s.sampleDone.length) + '%';
+      $('m-agree-s').textContent = `표본 ${s.sampleDone.length}개 중 ${s.agree}개 일치` + (s.sampleDone.length < s.sample.length ? ` · ${s.sample.length - s.sampleDone.length}개 남음` : '');
+    } else {
+      $('m-agree').textContent = '검수 대기';
+      $('m-agree-s').textContent = s.sample.length ? `표본 ${s.sample.length}개를 아직 안 봤습니다` : '이 회차에는 표본이 없습니다';
+    }
+    $('m-prog').textContent = s.items.length ? `${s.reviewed.length}/${s.items.length}` : '—';
+    $('m-prog-s').textContent = s.items.length ? `구멍 ${s.holes.length} + 표본 ${s.sample.length}` : '이 회차는 검수 대상이 올라오지 않았습니다';
+    $('m-holes').textContent = s.holesDone.length ? `${s.realHoles}/${s.holesDone.length}` : '—';
+    $('m-holes-s').textContent = s.holesDone.length ? `LLM이 찾은 구멍 중 사람도 구멍으로 본 수` + (s.fixWait ? ` · 보강 대기 ${s.fixWait}` : '') : '구멍 문항을 검수하면 나옵니다';
+
+    const notes = [];
+    if (run && run.other) notes.push(`이 회차는 <b>${run.other}문항을 측정하지 못했습니다</b>(API 크레딧 소진으로 이음이가 답하지 못함). 정확도는 측정된 ${run.ok + run.lack + run.wrong}문항 기준이고, 분류의 * 표시는 일부만 측정된 분류입니다.`);
+    if (run && run.truncated) notes.push('이 회차는 이음이 답변이 <b>앞 90자만</b> 저장됐습니다. 판정이 어려우면 메모에 남기고, 일치율은 다음 회차 기준으로 보세요.');
+    const judges = [...new Set(state.runs.map(r => r.judge).filter(Boolean))];
+    if (judges.length > 1) notes.push('회차 사이에 <b>채점 기준이 바뀐 적</b>이 있습니다. 추이 그래프의 점선 표시 이후는 채점 변화가 섞인 비교입니다.');
+    const n = $('notice');
+    n.hidden = !notes.length;
+    n.replaceChildren(...notes.map((t, i) => { const p = el('div'); p.innerHTML = t; return p; }));
+    if (!state.canWrite) { n.hidden = false; n.append(el('div', { text: '이 화면에서는 보기만 할 수 있습니다. 판정은 담당자 계정에서 저장됩니다.' })); }
+  }
+
+  function renderTrend() {
+    const runs = state.runs.filter(r => r.accuracy != null);
+    const box = $('trend');
+    if (runs.length < 1) { box.replaceChildren(el('p', { class: 'muted', text: '회차가 쌓이면 여기에 선으로 이어집니다.' })); return; }
+    const W = 520, H = 200, L = 40, R = 16, T = 14, B = 30;
+    const lo = Math.max(0, Math.floor((Math.min(...runs.map(r => r.accuracy)) - 3) / 5) * 5), hi = 100;
+    const x = (i) => runs.length === 1 ? (L + W - R) / 2 : L + i * (W - L - R) / (runs.length - 1);
+    const y = (v) => T + (hi - v) * (H - T - B) / (hi - lo);
+    const ns = 'http://www.w3.org/2000/svg';
+    const s = (tag, a) => { const n = document.createElementNS(ns, tag); for (const k in a) n.setAttribute(k, a[k]); return n; };
+    const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': '회차별 LLM 정확도 추이' });
+    for (let v = lo; v <= hi; v += 5) {
+      svg.append(s('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: 'grid' }));
+      const t = s('text', { x: L - 6, y: y(v) + 4, 'text-anchor': 'end', class: 'axis' }); t.textContent = v; svg.append(t);
+    }
+    // 채점 기준이 바뀐 지점은 세로 점선으로 남깁니다.
+    runs.forEach((r, i) => { if (i && r.judge && runs[i - 1].judge && r.judge !== runs[i - 1].judge) svg.append(s('line', { x1: x(i) - (x(i) - x(i - 1)) / 2, x2: x(i) - (x(i) - x(i - 1)) / 2, y1: T, y2: H - B, stroke: 'var(--warn)', 'stroke-dasharray': '4 4' })); });
+    if (runs.length > 1) {
+      const d = runs.map((r, i) => `${i ? 'L' : 'M'}${x(i)},${y(r.accuracy)}`).join(' ');
+      svg.append(s('path', { d: `${d} L${x(runs.length - 1)},${H - B} L${x(0)},${H - B} Z`, fill: 'var(--accent-soft)', stroke: 'none' }));
+      svg.append(s('path', { d, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2.5, 'stroke-linejoin': 'round' }));
+    }
+    runs.forEach((r, i) => {
+      const last = i === runs.length - 1, sel = r.round === state.round;
+      svg.append(s('circle', { cx: x(i), cy: y(r.accuracy), r: sel ? 5.5 : 4, fill: sel ? 'var(--accent)' : 'var(--surface)', stroke: 'var(--accent)', 'stroke-width': 2 }));
+      const lab = s('text', { x: x(i), y: H - B + 18, 'text-anchor': 'middle', class: 'axis' }); lab.textContent = r.round + '회'; svg.append(lab);
+      if (last || sel) { const v = s('text', { x: x(i), y: y(r.accuracy) - 10, 'text-anchor': 'middle', class: 'axis', 'font-weight': 600, fill: 'var(--ink)' }); v.textContent = r.accuracy + '%'; svg.append(v); }
+    });
+    box.replaceChildren(svg);
+  }
+
+  function renderCats() {
+    const run = state.runs.find(r => r.round === state.round);
+    const box = $('cats');
+    $('cat-round').textContent = run ? `· ${run.round}회차` : '';
+    if (!run || !run.byCat) { box.replaceChildren(el('p', { class: 'muted', text: '회차를 고르면 분류별로 나옵니다.' })); return; }
+    // 측정 못 한 분류(장애로 답을 못 받은 경우)는 맨 아래에 따로 표시합니다.
+    const rows = Object.entries(run.byCat).map(([k, v]) => ({ k, ...v, p: pct(v.ok, v.total) }))
+      .sort((a, b) => (a.p == null) - (b.p == null) || a.p - b.p || a.k.localeCompare(b.k));
+    box.replaceChildren(...rows.map(r => el('div', { class: 'cat' + (r.p != null && r.p < 100 ? ' low' : '') },
+      el('span', { text: r.k }),
+      r.p == null ? el('span', { class: 'muted', text: '측정 못 함', style: 'font-size:12px' })
+        : (() => { const b = el('span', { class: 'bar' }); const i = el('i'); i.style.width = r.p + '%'; b.append(i); return b; })(),
+      el('span', { class: 'n', text: r.p == null ? '—' : `${r.ok}/${r.total}` + (r.unmeasured ? '*' : '') }))));
+  }
+
+  function card(item) {
+    const saved = state.reviews.get(item.id);
+    const draft = state.drafts.get(item.id) || { human: saved?.human || '', problem: saved?.problem || '', desired: saved?.desired || '', action: saved?.action || '', done: !!saved?.done };
+    state.drafts.set(item.id, draft);
+
+    const c = el('article', { class: 'card' + (saved ? ' done-review' : ''), id: 'c-' + item.id });
+    c.append(el('div', { class: 'meta' },
+      el('span', { class: 'chip ' + item.kind, text: item.kind === 'hole' ? '구멍' : '표본' }),
+      el('span', { text: item.cat }), el('span', { class: 'num', text: '#' + item.idx }),
+      item.svc && item.svc !== '-' ? el('span', { text: '참조: ' + item.svc }) : null));
+    c.append(el('div', { class: 'q', text: item.q }));
+    const reply = el('div', { class: 'reply' }, item.reply || '(답변 없음)');
+    if (item.truncated) reply.append(el('div', { class: 'cut', text: '… 이 회차는 답변 앞부분만 저장됐습니다' }));
+    c.append(reply);
+    c.append(el('div', { class: 'why' }, el('span', { class: 'label', text: 'LLM 판정 ' }), pill(item.llm), ' ', el('span', { class: 'muted', text: item.reason || '' })));
+
+    const j = el('div', { class: 'judge' });
+    const seg = el('div', { class: 'seg', role: 'group', 'aria-label': '사람 판정' });
+    const extra = el('div', { class: 'fields' });
+    const fillExtra = () => {
+      extra.hidden = !(draft.human === '부족' || draft.human === '틀림');
+    };
+    for (const v of VERDICTS) {
+      seg.append(el('button', { type: 'button', 'data-v': v, 'aria-pressed': String(draft.human === v), disabled: !state.canWrite, text: v,
+        onclick: () => { draft.human = v; seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === v))); fillExtra(); mark(); } }));
+    }
+    const ta = (key, label, ph) => {
+      const id = `${key}-${item.id}`;
+      const t = el('textarea', { id, placeholder: ph, disabled: !state.canWrite, oninput: (e) => { draft[key] = e.target.value; mark(); } });
+      t.value = draft[key];
+      return el('div', { class: 'field' }, el('label', { class: 'label', for: id, text: label }), t);
+    };
+    extra.append(ta('problem', '문제', '무엇이 부족하거나 틀렸나요?'), ta('desired', '바라는 답변', '어르신께 이렇게 답했어야 합니다'));
+    fillExtra();
+
+    const actId = `action-${item.id}`, doneId = `done-${item.id}`;
+    const act = el('select', { id: actId, disabled: !state.canWrite, onchange: (e) => { draft.action = e.target.value; mark(); } },
+      ...ACTIONS.map(a => el('option', { value: a, text: a || '조치 선택' })));
+    act.value = draft.action;
+    const done = el('input', { type: 'checkbox', id: doneId, disabled: !state.canWrite, onchange: (e) => { draft.done = e.target.checked; mark(); } });
+    done.checked = draft.done;
+    const status = el('span', { class: 'status' });
+    const save = el('button', { type: 'button', class: 'save', disabled: true, text: '판정 저장', onclick: () => persist(item, draft, save, status) });
+    const agreeTxt = saved && item.kind === 'sample' ? el('span', { class: 'agree ' + (saved.human === item.llm ? 'yes' : 'no'), text: saved.human === item.llm ? 'LLM과 일치' : 'LLM과 다름' }) : null;
+    function mark() {
+      const changed = !saved || ['human', 'problem', 'desired', 'action'].some(k => (saved[k] || '') !== (draft[k] || '')) || !!saved.done !== draft.done;
+      save.disabled = !state.canWrite || !draft.human || !changed;
+      status.textContent = changed && saved ? '바뀐 내용이 있습니다' : (saved ? `저장됨 · ${fmt(saved.at)}` : '');
+    }
+    mark();
+
+    j.append(el('div', { class: 'row' }, el('span', { class: 'label', text: '사람 판정' }), seg, agreeTxt), extra,
+      el('div', { class: 'row' },
+        el('label', { class: 'row', for: actId }, el('span', { class: 'label', text: '조치' })), act,
+        el('label', { class: 'row', for: doneId }, done, el('span', { text: '보강 완료' })),
+        save, status));
+    c.append(j);
+    return c;
+  }
+  const fmt = (t) => { if (!t) return ''; const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+
+  function renderList() {
+    const s = stats();
+    const rv = (i) => state.reviews.get(i.id);
+    const f = state.filter;
+    const shown = s.items.filter(i => f === 'all' ? true : f === 'todo' ? !rv(i) : f === 'fix' ? (rv(i) && rv(i).human !== '충실' && rv(i).action && rv(i).action !== '조치 불필요' && !rv(i).done) : i.kind === f);
+    $('q-count').textContent = s.items.length ? `${shown.length}개` : '';
+    const list = $('list');
+    if (!s.items.length) {
+      list.replaceChildren(el('div', { class: 'empty' }, '이 회차는 검수 대상이 아직 올라오지 않았습니다.', el('br'), 'Claude에게 “', String(state.round ?? '최근'), '회차 검수 데이터 올려줘”라고 하면 구멍과 표본 20개가 들어옵니다.'));
+      return;
+    }
+    if (!shown.length) {
+      list.replaceChildren(el('div', { class: 'empty', text: f === 'todo' ? '이 회차는 모두 검수했습니다.' : f === 'fix' ? '보강을 기다리는 문항이 없습니다.' : '해당하는 문항이 없습니다.' }));
+      return;
+    }
+    // 입력 중인 카드는 다시 그리지 않습니다 — 타이핑하던 글이 날아가면 안 됩니다.
+    const active = document.activeElement && document.activeElement.closest && document.activeElement.closest('.card');
+    if (active && shown.some(i => 'c-' + i.id === active.id)) {
+      const keep = active.id;
+      const nodes = shown.map(i => 'c-' + i.id === keep ? active : card(i));
+      list.replaceChildren(...nodes);
+      return;
+    }
+    list.replaceChildren(...shown.map(card));
+  }
+
+  function renderAll() { renderRoundSelect(); renderMetrics(); renderTrend(); renderCats(); renderList(); }
+
+  // ---------- 저장 ----------
+  async function persist(item, draft, btn, status) {
+    if (!state.db) return;
+    btn.disabled = true; status.textContent = '저장 중…';
+    const body = { round: item.round, item: item.id, human: draft.human, llm: item.llm, kind: item.kind,
+      problem: draft.human === '충실' ? '' : draft.problem.trim(), desired: draft.human === '충실' ? '' : draft.desired.trim(),
+      action: draft.action, done: !!draft.done, at: new Date().toISOString() };
+    try {
+      await state.db.collection('reviews').doc(item.id).set(body);
+      state.drafts.delete(item.id);
+      status.textContent = '저장됨';
+    } catch (e) {
+      btn.disabled = false;
+      if (e && e.code === 'invalid_argument') { state.canWrite = false; status.textContent = '이 계정은 판정을 저장할 수 없습니다.'; renderMetrics(); }
+      else if (e && e.code === 'quota_exceeded') status.textContent = '저장 공간이 찼습니다. Claude에게 지난 회차 정리를 부탁하세요.';
+      else status.textContent = '저장하지 못했습니다. 잠시 뒤 다시 눌러 주세요.';
+    }
+  }
+
+  // ---------- 화면 조작 ----------
+  $('round').addEventListener('change', (e) => { state.round = Number(e.target.value); renderAll(); });
+  $('filters').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-f]'); if (!b) return;
+    state.filter = b.dataset.f;
+    $('filters').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    renderList();
+  });
+
+  // ---------- 데이터 연결 ----------
+  (async () => {
+    const db = await claude.use('db');
+    if (!db) {
+      $('notice').hidden = false;
+      $('notice').textContent = '검수 기록 저장소에 연결되지 않았습니다. claude.ai에 로그인한 상태로 이 페이지를 열어 주세요.';
+      state.canWrite = false;
+      return;
+    }
+    state.db = db;
+    const user = await claude.use('user');
+    if (user) { const w = await user.can('data.write'); if (w === false) state.canWrite = false; }
+    let ready = 0;
+    const settle = () => { ready++; renderAll(); };
+    const err = () => { $('notice').hidden = false; $('notice').textContent = '검수 데이터를 불러오지 못했습니다. 페이지를 새로 열어 주세요.'; };
+    db.collection('runs').onSnapshot((snap) => {
+      state.runs = snap.docs.map(d => d.data()).sort((a, b) => a.round - b.round); settle();
+    }, err);
+    db.collection('items').onSnapshot((snap) => {
+      state.items = snap.docs.map(d => ({ id: d.id, ...d.data() })); settle();
+    }, err);
+    db.collection('reviews').onSnapshot((snap) => {
+      state.reviews = new Map(snap.docs.map(d => [d.id, d.data()])); settle();
+    }, err);
+  })();
+})();
+</script>
